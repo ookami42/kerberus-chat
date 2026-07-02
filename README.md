@@ -131,6 +131,9 @@ kerberos-chat/
 │   ├── tgs_master.key
 │   └── service_master.key
 │
+├── docs/
+│   └── issues_projeto.md           # 40 tarefas (issues) do projeto
+│
 ├── scripts/
 │   ├── gerar_chaves.py             # Gera as 3 chaves mestras
 │   ├── cadastrar_usuario.py        # Adiciona usuário ao JSON
@@ -215,97 +218,62 @@ Esse cabeçalho é montado pela função `empacotar()` em `tgs_server/message.py
 
 ---
 
-## 🎯 Divisão do Trabalho (Issues)
+## Divisão do Trabalho (Issues)
 
 O projeto foi dividido em **40 tarefas atômicas** no estilo GitHub Issues.
 Cada pessoa escolhe uma issue, implementa, abre PR, outra revisa. Depois pega outra.
 
-> Lista completa em [`issues_projeto.md`](../issues_projeto.md)
+> Lista completa em [`issues_projeto.md`](docs/issues_projeto.md)
 
-### 🏗️ Grupo 0 — Fundação (qualquer pessoa)
+---
 
-| # | Tarefa | Arquivo |
-|---|--------|---------|
-| 1 | Constantes de configuração | `common/config.py` |
-| 2 | `cifrar_aes_gcm()` | `common/crypto.py` |
-| 3 | `decifrar_aes_gcm()` | `common/crypto.py` |
-| 4 | `derivar_chave()` (PBKDF2) | `common/crypto.py` |
-| 5 | `empacotar()` / `desempacotar()` | `tgs_server/message.py` |
-| 6 | Constantes dos tipos de mensagem | `tgs_server/message.py` |
-| 7 | `criar_ticket()` / `extrair_ticket()` | `tgs_server/message.py` |
-| 8 | Script de geração de chaves | `scripts/gerar_chaves.py` |
+### Ordem sugerida para começar
 
-### 👤 Grupo 1 — Usuários
+**Legenda:** `#N` = número da issue. Dependências indicam issues que precisam estar prontas antes.
 
-| # | Tarefa | Arquivo |
-|---|--------|---------|
-| 9 | Classe UserDB | `as_server/user_db.py` |
-| 10 | Script de cadastro de usuário | `scripts/cadastrar_usuario.py` |
+1. **Issues #2, #3, #4** (crypto) — 1 pessoa, 1-2 dias
+2. **Issues #5, #6, #7** (message) — 1 pessoa, 1 dia
+3. **Issue #1** (config) — 1 pessoa, 30 min
+4. **Issues #8, #9, #10** (chaves + usuários) — 1 pessoa, 1 dia
+5. **Issues #11, #12, #13, #14, #15** (AS) — 1 pessoa, 2-3 dias
+6. **Issues #16, #17, #18, #19, #20** (TGS) — 1 pessoa, 2-3 dias
+7. **Issues #21, #22, #23, #24, #25, #26** (Serviço) — 1 pessoa, 2-3 dias
+8. **Issues #28, #29, #30, #31, #32, #33** (Cliente) — 1 pessoa, 3-4 dias
+9. **Issue #27** (teste de ataque) — 1 pessoa, 1 dia
+10. **Issues #34 a #40** (docs + relatório) — TODOS
 
-### 🖥️ Grupo 2 — AS (Authentication Server)
+---
 
-| # | Tarefa | Arquivo |
-|---|--------|---------|
-| 11 | Esqueleto do AS (socket + thread) | `as_server/as_server.py` |
-| 12 | Receber `MSG_AUTH_REQUEST` | `as_server/as_server.py` |
-| 13 | Derivar chave e gerar session key | `as_server/as_server.py` |
-| 14 | Montar e cifrar TGT | `as_server/as_server.py` |
-| 15 | Cifrar session key e responder | `as_server/as_server.py` |
-
-### 🎫 Grupo 3 — TGS (Ticket Granting Server)
-
-| # | Tarefa | Arquivo |
-|---|--------|---------|
-| 16 | Esqueleto do TGS (socket + thread) | `tgs_server/tgs_server.py` |
-| 17 | Receber `MSG_TGS_REQUEST` | `tgs_server/tgs_server.py` |
-| 18 | Decifrar e validar TGT | `tgs_server/tgs_server.py` |
-| 19 | Gerar Service Ticket | `tgs_server/tgs_server.py` |
-| 20 | Montar e enviar resposta | `tgs_server/tgs_server.py` |
-
-### 🔐 Grupo 4 — Serviço Protegido
-
-| # | Tarefa | Arquivo |
-|---|--------|---------|
-| 21 | Esqueleto do Serviço (socket + thread) | `service/service_server.py` |
-| 22 | Receber `MSG_SVC_REQUEST` | `service/service_server.py` |
-| 23 | Decifrar e validar Service Ticket | `service/service_server.py` |
-| 24 | Decifrar e validar authenticator | `service/service_server.py` |
-| 25 | Autenticação mútua (timestamp+1) | `service/service_server.py` |
-| 26 | Echo chat | `service/handler.py` |
-| 27 | Script de teste de ataque | `scripts/testar_ataque.py` |
-
-### 💻 Grupo 5 — Cliente
-
-| # | Tarefa | Arquivo |
-|---|--------|---------|
-| 28 | Conectar no AS | `client/client.py` |
-| 29 | Decifrar K_c_AS | `client/client.py` |
-| 30 | Conectar no TGS | `client/client.py` |
-| 31 | Conectar no Serviço + aut. mútua | `client/client.py` |
-| 32 | Interface de terminal (UI) | `client/ui.py` |
-| 33 | Orquestrar fluxo completo | `client/client.py` |
-
-### 📝 Grupo 6 — Documentação
-
-| # | Tarefa | Responsável |
-|---|--------|-------------|
-| 34 | README final | Quem pegar |
-| 35-40 | Relatório + vídeo | TODOS |
-
-### Ordem sugerida
+### Resumo de Dependências
 
 ```
-1º  Issues #1 a #8  (fundação — paralelizável)
-2º  Issue #9, #10   (usuários)
-3º  Issues #11-#15  (AS)
-    Issues #16-#20  (TGS)          ← em paralelo com AS
-    Issues #21-#26  (Serviço)      ← em paralelo com AS
-4º  Issues #28-#33  (Cliente)      ← depois dos servidores prontos
-5º  Issue #27       (teste ataque)
-6º  Issues #34-#40  (documentação)
+#1  (config)
+ ├─ #9  (UserDB)
+ │   └─ #10 (cadastrar usuário)
+ ├─ #11 (esqueleto AS)
+ │   └─ #12 (receber request AS)
+ │       └─ #13 (derivar chave AS)
+ │           └─ #14 (montar TGT)
+ │               └─ #15 (responder AS) ← depende de #2
+ ├─ #16 (esqueleto TGS)
+ │   └─ #17 (receber request TGS)
+ │       └─ #18 (decifrar TGT TGS)
+ │           └─ #19 (gerar Service Ticket)
+ │               └─ #20 (responder TGS) ← depende de #2
+ ├─ #21 (esqueleto Serviço)
+ │   └─ #22 (receber request Serviço)
+ │       └─ #23 (decifrar ticket Serviço)
+ │           └─ #24 (validar authenticator)
+ │               └─ #25 (autenticação mútua)
+ │                   └─ #26 (echo chat)
+ └─ #28 (cliente AS)
+     └─ #29 (decifrar K_c_AS)
+         └─ #30 (cliente TGS)
+             └─ #31 (cliente Serviço)
+                 └─ #33 (cliente completo)
 ```
 
-> 💡 **Vantagem:** cada pessoa pode pegar issues de grupos diferentes — uma hora faz crypto, outra hora faz um handler do AS. Ninguém fica preso a um módulo só.
+**Issues independentes (qualquer hora):** #2, #3, #4, #5, #6, #7, #8, #32, #34
 
 ---
 
