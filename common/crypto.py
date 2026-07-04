@@ -4,7 +4,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 
-from common.config import TAMANHO_CHAVE
+from common.config import TAMANHO_CHAVE, TAMANHO_NONCE
 
 
 def cifrar_aes_gcm(chave: bytes, texto_plano: bytes) -> bytes:
@@ -21,7 +21,7 @@ def cifrar_aes_gcm(chave: bytes, texto_plano: bytes) -> bytes:
         bytes: nonce (12 bytes) concatenado ao texto cifrado.
     """
     aesgcm = AESGCM(chave)
-    nonce = urandom(12)
+    nonce = urandom(TAMANHO_NONCE)
     texto_cifrado = aesgcm.encrypt(nonce, texto_plano, associated_data=None)
     return nonce + texto_cifrado
 
@@ -41,8 +41,8 @@ def decifrar_aes_gcm(chave: bytes, pacote: bytes) -> bytes:
         InvalidTag: Se a cifra foi violada ou a chave está incorreta.
     """
     aesgcm = AESGCM(chave)
-    nonce = pacote[:12]
-    texto_cifrado = pacote[12:]
+    nonce = pacote[:TAMANHO_NONCE]
+    texto_cifrado = pacote[TAMANHO_NONCE:]
     texto_plano = aesgcm.decrypt(nonce, texto_cifrado, associated_data=None)
     return texto_plano
 
