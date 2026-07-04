@@ -4,6 +4,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 
+from common.config import TAMANHO_CHAVE
+
 
 def cifrar_aes_gcm(chave: bytes, texto_plano: bytes) -> bytes:
     """Cifra dados com AES-GCM.
@@ -12,7 +14,7 @@ def cifrar_aes_gcm(chave: bytes, texto_plano: bytes) -> bytes:
     nonce + texto_cifrado num único pacote.
 
     Args:
-        chave: Chave AES de 16 bytes (128 bits).
+        chave: Chave AES de TAMANHO_CHAVE bytes (128 bits).
         texto_plano: Dados a cifrar.
 
     Returns:
@@ -29,7 +31,7 @@ def decifrar_aes_gcm(chave: bytes, pacote: bytes) -> bytes:
     Extrai o nonce (12 bytes) do início do pacote e decifra o restante.
 
     Args:
-        chave: Chave AES de 16 bytes (128 bits).
+        chave: Chave AES de TAMANHO_CHAVE bytes (128 bits).
         pacote: nonce (12 bytes) + texto cifrado.
 
     Returns:
@@ -46,18 +48,18 @@ def decifrar_aes_gcm(chave: bytes, pacote: bytes) -> bytes:
 
 
 def derivar_chave(senha: bytes, salt: bytes) -> bytes:
-    """Deriva uma chave de 128 bits a partir de senha e salt usando PBKDF2-HMAC-SHA256.
+    """Deriva uma chave de TAMANHO_CHAVE bytes (128 bits) a partir de senha e salt usando PBKDF2-HMAC-SHA256.
 
     Args:
         senha: Senha do usuário em bytes.
         salt: Salt aleatório em bytes.
 
     Returns:
-        bytes: Chave derivada AES de 16 bytes.
+        bytes: Chave derivada AES de TAMANHO_CHAVE bytes.
     """
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
-        length=16,
+        length=TAMANHO_CHAVE,
         salt=salt,
         iterations=100_000,
     )
