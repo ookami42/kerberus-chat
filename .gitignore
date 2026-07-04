@@ -2,4 +2,5 @@ keys/*.key
 __pycache__/
 *.pyc
 .env
+AGENTS.md
 .venv/
