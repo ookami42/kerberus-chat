@@ -1,25 +1,50 @@
 import socket
 import threading
+import struct
+import time
+import os
 
 try:
     # Importação relativa quando executado como módulo do pacote as_server
     from .config import AS_HOST, AS_PORT, USER_DB_PATH
     from .user_db import UserDB
+    from .protocol import (
+        MSG_AUTH_REQUEST,
+        MSG_AUTH_REPLY,
+        MSG_ERROR,
+        desempacotar,
+        empacotar,
+        criar_ticket,
+    )
+    from common.crypto import cifrar_aes_gcm
 except ImportError:
     # Importação direta quando executado como script (python as_server.py)
     from config import AS_HOST, AS_PORT, USER_DB_PATH
     from user_db import UserDB
+    from protocol import (
+        MSG_AUTH_REQUEST,
+        MSG_AUTH_REPLY,
+        MSG_ERROR,
+        desempacotar,
+        empacotar,
+        criar_ticket,
+    )
+    try:
+        from common.crypto import cifrar_aes_gcm
+    except ImportError:
+        from crypto import cifrar_aes_gcm
+
+
+# Tamanho fixo do salt utilizado na derivação da chave do cliente
+SALT_TAMANHO = 16
 
 
 class ASServer:
     """Servidor de Autenticação (AS) para o projeto kerberos-chat.
 
-    Responsável por receber conexões de clientes e, em uma implementação
-    completa, emitir tickets iniciais (TGT). Esta versão implementa o
-    esqueleto de rede: inicialização, loop de aceitação de conexões e
-    atendimento básico de cada cliente em uma thread dedicada.
-
-    Integra a issue #1 (configurações centralizadas) e a issue #9 (UserDB).
+    Responsável por receber conexões de clientes e emitir tickets iniciais
+    (TGT). Esta versão integra a issue #1 (configurações centralizadas), a
+    issue #9 (UserDB) e a issue #2 (funções de criptografia AES-GCM).
     """
 
     def __init__(self, host: str = AS_HOST, porta: int = AS_PORT,
@@ -63,14 +88,171 @@ class ASServer:
                 self._socket.close()
                 self._socket = None
 
-    def atender_cliente(self, con: socket.socket, addr) -> None:
-        """Atende um cliente conectado.
+    def _recv_exato(self, con: socket.socket, tamanho: int) -> bytes | None:
+        """Lê exatamente `tamanho` bytes do socket.
 
-        Neste esqueleto, apenas registra a conexão e fecha o socket do
-        cliente de forma segura, garantindo o encerramento da thread.
+        Retorna None se a conexão for fechada antes de completar a leitura.
+        """
+        dados = b""
+        while len(dados) < tamanho:
+            chunk = con.recv(tamanho - len(dados))
+            if not chunk:
+                return None
+            dados += chunk
+        return dados
+
+    def _enviar_erro(self, con: socket.socket) -> None:
+        """Envia uma mensagem de erro e encerra a conexão com o cliente."""
+        try:
+            con.sendall(empacotar(MSG_ERROR, b""))
+        except OSError:
+            pass
+
+    def _extrair_salt(self, usuario) -> bytes:
+        """Extrai o salt (16 bytes) do registro do usuário.
+
+        Aceita registros em formato dict ou objetos com atributo `salt`.
+        Retorna um salt de 16 bytes ou bytes vazios quando indisponível.
+        """
+        salt = None
+        if isinstance(usuario, dict):
+            salt = (
+                usuario.get("salt")
+                or usuario.get("salt_hash")
+                or usuario.get("password_salt")
+                or usuario.get("senha_salt")
+            )
+        else:
+            salt = getattr(usuario, "salt", None)
+
+        if salt is None:
+            return b""
+
+        if isinstance(salt, str):
+            try:
+                salt = bytes.fromhex(salt)
+            except ValueError:
+                salt = salt.encode("utf-8")
+
+        return salt
+
+    def _extrair_chave_cliente(self, usuario) -> bytes:
+        """Extrai a chave do cliente (K_c) a partir do registro do usuário.
+
+        O hash armazenado serve como chave derivada da senha do cliente.
+        """
+        if isinstance(usuario, dict):
+            hash_usuario = (
+                usuario.get("hash")
+                or usuario.get("password_hash")
+                or usuario.get("senha_hash")
+                or b""
+            )
+        else:
+            hash_usuario = getattr(usuario, "hash", None) or getattr(
+                usuario, "password_hash", None
+            ) or getattr(usuario, "senha_hash", None) or b""
+
+        if isinstance(hash_usuario, str):
+            try:
+                return bytes.fromhex(hash_usuario)
+            except ValueError:
+                return hash_usuario.encode("utf-8")
+        return hash_usuario
+
+    def atender_cliente(self, con: socket.socket, addr) -> None:
+        """Atende um cliente conectado implementando o fluxo de autenticação.
+
+        Fluxo:
+        1. Lê o cabeçalho de 6 bytes e extrai tipo/tamanho.
+        2. Valida que a mensagem é MSG_AUTH_REQUEST.
+        3. Lê o payload contendo o nome do usuário.
+        4. Busca o usuário no UserDB.
+        5. Recupera o salt e a chave do cliente (K_c).
+        6. Gera a chave de sessão K_c_AS.
+        7. Monta o TGT com criar_ticket.
+        8. Cifra o TGT com a chave mestra do AS e K_c_AS com a chave do cliente.
+        9. Envia MSG_AUTH_REPLY com salt, TGT cifrado e K_c_AS cifrada.
         """
         try:
             print(f"[AS] Conexão recebida de {addr}")
+
+            # Cabeçalho fixo de 6 bytes: tipo + tamanho
+            header = self._recv_exato(con, 6)
+            if header is None:
+                return
+
+            tipo, tamanho = desempacotar(header)
+            if tipo != MSG_AUTH_REQUEST:
+                self._enviar_erro(con)
+                return
+
+            # Payload contendo o nome do usuário
+            payload = self._recv_exato(con, tamanho)
+            if payload is None:
+                self._enviar_erro(con)
+                return
+
+            nome_usuario = payload.decode("utf-8", errors="replace").strip()
+
+            if self.user_db is None:
+                self._enviar_erro(con)
+                return
+
+            usuario = self.user_db.buscar_usuario(nome_usuario)
+            if usuario is None:
+                self._enviar_erro(con)
+                return
+
+            # Recupera o salt do usuário para que o cliente possa derivar K_c
+            salt = self._extrair_salt(usuario)
+            if len(salt) != SALT_TAMANHO:
+                # Garante que o salt tenha exatamente 16 bytes no payload
+                salt = salt[:SALT_TAMANHO].ljust(SALT_TAMANHO, b"\x00")
+
+            # Recupera a chave do cliente (K_c) a partir do hash armazenado
+            K_c = self._extrair_chave_cliente(usuario)
+            if not K_c:
+                self._enviar_erro(con)
+                return
+
+            # Chave de sessão cliente/AS
+            K_c_AS = os.urandom(16)
+
+            # Monta o TGT
+            timestamp = time.time()
+            validade = 3600
+            ticket = criar_ticket(
+                usuario=nome_usuario,
+                servico="TGS",
+                timestamp=timestamp,
+                validade=validade,
+                chave=K_c_AS,
+            )
+
+            # Cifra o TGT com a chave mestra do AS (issue #2)
+            ticket_cifrado = cifrar_aes_gcm(self.chave_mestra, ticket)
+
+            # Cifra a chave de sessão K_c_AS com a chave do cliente K_c (issue #2)
+            K_c_AS_cifrada = cifrar_aes_gcm(K_c, K_c_AS)
+
+            # Payload final da MSG_AUTH_REPLY:
+            #   [salt (16 bytes)]
+            #   + [tamanho_tgt (4 bytes)] + [TGT_cifrado]
+            #   + [tamanho_k_c_as (4 bytes)] + [K_c_AS_cifrada]
+            payload_resposta = (
+                salt
+                + struct.pack("!I", len(ticket_cifrado))
+                + ticket_cifrado
+                + struct.pack("!I", len(K_c_AS_cifrada))
+                + K_c_AS_cifrada
+            )
+
+            con.sendall(empacotar(MSG_AUTH_REPLY, payload_resposta))
+
+        except Exception as exc:
+            print(f"[AS] Erro ao atender cliente {addr}: {exc}")
+            self._enviar_erro(con)
         finally:
             try:
                 con.close()
@@ -78,16 +260,31 @@ class ASServer:
                 pass
 
 
+def _carregar_chave_mestra(caminho: str = "keys/as_master.key") -> bytes:
+    """Carrega a chave mestra do AS a partir de um arquivo.
+
+    Se o arquivo não existir, exibe um aviso e retorna bytes vazios.
+    """
+    if not os.path.exists(caminho):
+        print(f"[AS] Aviso: arquivo de chave mestra não encontrado em {caminho}")
+        return b""
+    with open(caminho, "rb") as arquivo:
+        return arquivo.read()
+
+
 if __name__ == "__main__":
     # Instancia o UserDB usando o caminho definido na configuração (issue #1)
     banco_usuarios = UserDB(USER_DB_PATH)
 
-    # Cria o servidor utilizando host e port das configurações (issue #1)
-    # e o UserDB da issue #9
+    # Carrega a chave mestra do AS a partir de keys/as_master.key (issue #2)
+    chave_mestra_as = _carregar_chave_mestra("keys/as_master.key")
+
+    # Cria o servidor utilizando host e port das configurações (issue #1),
+    # o UserDB da issue #9 e a chave mestra da issue #2
     servidor = ASServer(
         host=AS_HOST,
         porta=AS_PORT,
         user_db=banco_usuarios,
-        chave_mestra=b""
+        chave_mestra=chave_mestra_as,
     )
     servidor.iniciar()
