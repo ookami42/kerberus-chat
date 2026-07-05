@@ -1,235 +1,162 @@
-"""Cliente — orquestra fluxo Kerberos: AS → TGS → Serviço."""
+import getpass
 import socket
 import sys
-
-from common.config import AS_HOST, AS_PORT
+import struct
+import time
+from common.config import AS_HOST, AS_PORT, TGS_HOST, TGS_PORT, SVC_HOST, SVC_PORT
+from common.crypto import derivar_chave, decifrar_aes_gcm, cifrar_aes_gcm
 from common.protocol import (
-    empacotar,
-    desempacotar,
-    MSG_AUTH_REQUEST,
-    MSG_AUTH_REPLY,
-    MSG_ERROR,
+    empacotar, desempacotar,
+    MSG_AUTH_REQUEST, MSG_AUTH_REPLY,
+    MSG_TGS_REQUEST, MSG_TGS_REPLY,
+    MSG_SVC_REQUEST, MSG_SVC_REPLY,
+    MSG_ERROR
 )
 
-
 class ClienteKerberos:
-    """
-    Cliente Kerberos conforme o Grupo 5 do projeto.
+    def __init__(self):
+        self.usuario = None
+        self.k_c_as = None      # Chave de sessão Cliente-TGS
+        self.k_c_svc = None     # Chave de sessão Cliente-Serviço
+        self.tgt_cifrado = None
+        self.st_cifrado = None
+        self.ts_original = 0
+        self.socket = None
 
-    Passo 1 (implementado):
-      - Conecta no AS (Authentication Server).
-      - Envia MSG_AUTH_REQUEST com o nome do usuario.
-      - Recebe MSG_AUTH_REPLY (salt + TGT cifrado + K_c_AS cifrada)
-        ou MSG_ERROR.
-    """
-
-    SALT_LENGTH = 16
-
-    def __init__(self, host: str = AS_HOST, port: int = AS_PORT):
-        self.host = host
-        self.port = port
-        self.socket: socket.socket | None = None
-        self.usuario: str | None = None
-        self.salt: bytes | None = None
-        self.tgt_cifrado: bytes | None = None
-        self.k_c_as_cifrada: bytes | None = None
-
-    # ------------------------------------------------------------------
-    # Passo 1: Autenticacao no AS
-    # ------------------------------------------------------------------
-
-    def passo1_solicitar_usuario(self) -> str:
-        """Solicita o nome do usuario via entrada padrao."""
-        usuario = input("Digite o nome do usuario: ").strip()
-        if not usuario:
-            raise ValueError("Nome de usuario nao pode ser vazio.")
-        self.usuario = usuario
-        return usuario
-
-    def passo1_conectar_as(self) -> None:
-        """Conecta via socket TCP ao Authentication Server."""
+    # --- UTILITÁRIOS ---
+    def _conectar(self, host, porta):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.settimeout(30)
-        self.socket.connect((self.host, self.port))
-        print(f"[CLIENTE] Conectado ao AS em {self.host}:{self.port}")
+        self.socket.connect((host, porta))
 
-    def passo1_enviar_auth_request(self) -> None:
-        """Envia MSG_AUTH_REQUEST contendo o nome do usuario."""
-        if self.socket is None:
-            raise RuntimeError("Socket nao inicializado.")
-        if self.usuario is None:
-            raise RuntimeError("Usuario nao definido.")
+    def _receber_msg(self):
+        header = self.socket.recv(6)
+        if not header: return None, None
+        tipo, tamanho = desempacotar(header)
+        payload = self.socket.recv(tamanho)
+        return tipo, payload
 
-        payload = self.usuario.encode("utf-8")
-        mensagem = empacotar(MSG_AUTH_REQUEST, payload)
-        self.socket.sendall(mensagem)
-        print(f"[CLIENTE] MSG_AUTH_REQUEST enviada para usuario '{self.usuario}'")
+    def fechar(self):
+        if self.socket:
+            self.socket.close()
+            self.socket = None
 
-    def passo1_receber_resposta(self) -> None:
-        """
-        Recebe a resposta do AS e valida o tipo da mensagem.
+    # --- PASSO 1: AS (Authentication Server) ---
+    def executar_passo1(self):
+        self.usuario = input("Usuário: ").strip()
+        self._conectar(AS_HOST, AS_PORT)
+        self.socket.sendall(empacotar(MSG_AUTH_REQUEST, self.usuario.encode()))
+        
+        tipo, payload = self._receber_msg()
+        self.fechar()
 
-        Em caso de sucesso (MSG_AUTH_REPLY), extrai do payload:
-          - salt (16 bytes)
-          - TGT cifrado
-          - K_c_AS cifrada
-        """
-        if self.socket is None:
-            raise RuntimeError("Socket nao inicializado.")
+        if tipo == MSG_ERROR: raise Exception(f"Erro no AS: {payload.decode()}")
+        
+        # Extração: Salt(16b) + TGT + K_c_AS
+        salt = payload[:16]
+        offset = 16
+        tam_tgt = struct.unpack(">I", payload[offset:offset+4])[0]
+        self.tgt_cifrado = payload[offset+4 : offset+4+tam_tgt]
+        offset += 4 + tam_tgt
+        tam_k = struct.unpack(">I", payload[offset:offset+4])[0]
+        k_as_cifrada = payload[offset+4 : offset+4+tam_k]
 
-        dados = self._receber_mensagem_completa()
-        tipo, payload = desempacotar(dados)
+        senha = getpass.getpass("Senha: ")
+        k_c = derivar_chave(senha.encode(), salt)
+        self.k_c_as = decifrar_aes_gcm(k_c, k_as_cifrada)
+        print("[OK] Autenticado no AS.")
 
-        if tipo == MSG_ERROR:
-            erro = payload.decode("utf-8", errors="replace")
-            raise RuntimeError(f"AS retornou erro: {erro}")
+    # --- PASSO 2: TGS (Ticket Granting Server) ---
+    def executar_passo2(self):
+        self._conectar(TGS_HOST, TGS_PORT)
+        # Payload: [4b tam_tgt][TGT] + [4b tam_svc][nome_svc]
+        payload = struct.pack(">I", len(self.tgt_cifrado)) + self.tgt_cifrado + \
+                  struct.pack(">I", 4) + b"chat"
+        
+        self.socket.sendall(empacotar(MSG_TGS_REQUEST, payload))
+        tipo, payload = self._receber_msg()
+        self.fechar()
 
-        if tipo != MSG_AUTH_REPLY:
-            raise RuntimeError(
-                f"Tipo de mensagem inesperado do AS: {tipo} "
-                f"(esperado MSG_AUTH_REPLY={MSG_AUTH_REPLY} ou MSG_ERROR={MSG_ERROR})"
-            )
+        if tipo == MSG_ERROR: raise Exception(f"Erro no TGS: {payload.decode()}")
 
-        self._extrair_auth_reply(payload)
-        print("[CLIENTE] MSG_AUTH_REPLY recebida com sucesso.")
-        print(f"[CLIENTE] Salt: {self.salt.hex() if self.salt else None}")
-        print(
-            f"[CLIENTE] TGT cifrado: {len(self.tgt_cifrado)} bytes "
-            if self.tgt_cifrado
-            else "[CLIENTE] TGT cifrado: None"
-        )
-        print(
-            f"[CLIENTE] K_c_AS cifrada: {len(self.k_c_as_cifrada)} bytes "
-            if self.k_c_as_cifrada
-            else "[CLIENTE] K_c_AS cifrada: None"
-        )
-
-    def _extrair_auth_reply(self, payload: bytes) -> None:
-        """
-        Extrai do payload da MSG_AUTH_REPLY:
-          - salt: 16 bytes iniciais
-          - tgt_cifrado: proximos 4 bytes indicam o tamanho, seguidos do TGT
-          - k_c_as_cifrada: proximos 4 bytes indicam o tamanho, seguidos da chave
-        """
         offset = 0
+        tam_st = struct.unpack(">I", payload[offset:offset+4])[0]
+        self.st_cifrado = payload[offset+4 : offset+4+tam_st]
+        offset += 4 + tam_st
+        tam_ks = struct.unpack(">I", payload[offset:offset+4])[0]
+        ks_cifrada = payload[offset+4 : offset+4+tam_ks]
 
-        if len(payload) < self.SALT_LENGTH:
-            raise ValueError(
-                f"Payload insuficiente para salt: "
-                f"{len(payload)} bytes (esperado >= {self.SALT_LENGTH})"
-            )
+        self.k_c_svc = decifrar_aes_gcm(self.k_c_as, ks_cifrada)
+        print("[OK] Ticket de serviço obtido.")
 
-        self.salt = payload[offset : offset + self.SALT_LENGTH]
-        offset += self.SALT_LENGTH
+    # --- PASSO 3: SERVIÇO (Autenticação Mútua) ---
+    def executar_passo3(self):
+        self._conectar(SVC_HOST, SVC_PORT)
+        self.ts_original = int(time.time())
+        
+        # Authenticator: [2b len_nome][nome][8b timestamp]
+        nome_b = self.usuario.encode()
+        auth = struct.pack(">H", len(nome_b)) + nome_b + struct.pack(">Q", self.ts_original)
+        auth_cifrado = cifrar_aes_gcm(self.k_c_svc, auth)
 
-        self.tgt_cifrado = self._extrair_blob_com_tamanho(payload, offset)
-        offset += 4 + len(self.tgt_cifrado)
+        payload = struct.pack(">I", len(self.st_cifrado)) + self.st_cifrado + \
+                  struct.pack(">I", len(auth_cifrado)) + auth_cifrado
+        
+        self.socket.sendall(empacotar(MSG_SVC_REQUEST, payload))
+        tipo, payload = self._receber_msg()
 
-        self.k_c_as_cifrada = self._extrair_blob_com_tamanho(payload, offset)
+        if tipo == MSG_ERROR: raise Exception(f"Erro no Serviço: {payload.decode()}")
 
-    @staticmethod
-    def _extrair_blob_com_tamanho(payload: bytes, offset: int) -> bytes:
-        """Extrai um blob precedido por um inteiro de 4 bytes (big-endian)."""
-        if offset + 4 > len(payload):
-            raise ValueError(
-                f"Payload insuficiente para ler tamanho do blob em offset {offset}"
-            )
-        tamanho = int.from_bytes(
-            payload[offset : offset + 4], byteorder="big", signed=False
-        )
-        inicio = offset + 4
-        fim = inicio + tamanho
-        if fim > len(payload):
-            raise ValueError(
-                f"Payload insuficiente para ler blob de {tamanho} bytes "
-                f"em offset {inicio}"
-            )
-        return payload[inicio:fim]
+        resp_decifrada = decifrar_aes_gcm(self.k_c_svc, payload)
+        ts_resp = struct.unpack(">Q", resp_decifrada)[0]
+        
+        if ts_resp == self.ts_original + 1:
+            print("[OK] Autenticação mútua concluída. O servidor é confiável.")
+            print("--- CONECTADO AO CHAT ---")
+        else:
+            self.fechar()
+            raise Exception("Falha na autenticação mútua!")
 
-    def _receber_mensagem_completa(self) -> bytes:
+    # --- ISSUE #32: Interface de Chat ---
+    def loop_chat(self):
         """
-        Recebe a mensagem completa do socket.
-
-        Assume que o cabecalho definido pelo protocolo indica o tamanho total
-        da mensagem. Caso o protocolo utilize um cabecalho de tamanho fixo,
-        este metodo le o cabecalho primeiro e em seguida o restante do payload.
+        Loop de interação do usuário com o serviço de eco.
         """
-        if self.socket is None:
-            raise RuntimeError("Socket nao inicializado.")
-
-        # Le os primeiros 8 bytes (cabecalho tipico: tipo + tamanho).
-        # Ajuste conforme a implementacao real de empacotar/desempacotar.
-        cabecalho = self._receber_exato(8)
-        if len(cabecalho) < 8:
-            raise RuntimeError("Conexao encerrada antes do cabecalho completo.")
-
-        tamanho_payload = int.from_bytes(
-            cabecalho[4:8], byteorder="big", signed=False
-        )
-        payload = self._receber_exato(tamanho_payload)
-
-        return cabecalho + payload
-
-    def _receber_exato(self, n: int) -> bytes:
-        """Le exatamente n bytes do socket, bloqueando ate completar."""
-        if self.socket is None:
-            raise RuntimeError("Socket nao inicializado.")
-
-        partes: list[bytes] = []
-        recebido = 0
-        while recebido < n:
-            chunk = self.socket.recv(n - recebido)
-            if not chunk:
-                break
-            partes.append(chunk)
-            recebido += len(chunk)
-        return b"".join(partes)
-
-    # ------------------------------------------------------------------
-    # Passos futuros (placeholders conforme o playbook da skill)
-    # ------------------------------------------------------------------
-
-    def passo2_solicitar_tgs(self) -> None:
-        """Passo 2: Conectar no TGS e solicitar ticket de servico. (A implementar)"""
-        raise NotImplementedError("Passo 2 ainda nao implementado.")
-
-    def passo3_acessar_servico(self) -> None:
-        """Passo 3: Conectar no servico e validar o ticket. (A implementar)"""
-        raise NotImplementedError("Passo 3 ainda nao implementado.")
-
-    # ------------------------------------------------------------------
-    # Ciclo de vida
-    # ------------------------------------------------------------------
-
-    def fechar(self) -> None:
-        """Fecha o socket se estiver aberto."""
-        if self.socket is not None:
-            try:
-                self.socket.close()
-            except OSError:
-                pass
-            finally:
-                self.socket = None
-
-    def executar_passo1(self) -> None:
-        """Executa o Passo 1 completo do protocolo Kerberos."""
+        print("\nComandos: 'sair' para encerrar.")
         try:
-            self.passo1_solicitar_usuario()
-            self.passo1_conectar_as()
-            self.passo1_enviar_auth_request()
-            self.passo1_receber_resposta()
+            while True:
+                mensagem = input("> ").strip()
+                
+                if not mensagem:
+                    continue
+                if mensagem.lower() == 'sair':
+                    print("[CLIENTE] Encerrando chat...")
+                    break
+
+                # Envia a mensagem (Tipo 7)
+                self.socket.sendall(empacotar(MSG_CHAT, mensagem.encode()))
+                
+                # Recebe o eco (Tipo 8)
+                tipo, payload = self._receber_msg()
+                
+                if tipo == MSG_ECHO:
+                    print(f"Servidor: {payload.decode()}")
+                elif tipo == MSG_ERROR:
+                    print(f"[ERRO] Servidor retornou: {payload.decode()}")
+                    break
+                else:
+                    print(f"[AVISO] Tipo de mensagem inesperado: {tipo}")
+        except KeyboardInterrupt:
+            print("\n[CLIENTE] Chat interrompido.")
         finally:
             self.fechar()
-
-
-def main() -> None:
+            
+if __name__ == "__main__":
     cliente = ClienteKerberos()
     try:
         cliente.executar_passo1()
-    except Exception as exc:
-        print(f"[CLIENTE] Erro: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+        cliente.executar_passo2()
+        cliente.executar_passo3()
+        cliente.loop_chat()
+    except Exception as e:
+        print(f"\n[FALHA] Não foi possível completar o fluxo: {e}")
+        cliente.fechar()
