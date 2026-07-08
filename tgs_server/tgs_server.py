@@ -17,13 +17,40 @@ from .message import (
 )
 
 class TGSServer:
-    def __init__(self, host, porta, chave_as, chave_servico):       
+    """Servidor do Ticket Granting Server (TGS).
+
+    O TGS recebe requisições contendo um Ticket Granting Ticket (TGT),
+    valida sua autenticidade e validade, gera uma nova chave de sessão
+    Cliente↔Serviço, cria um Service Ticket cifrado com a chave do
+    serviço e envia uma resposta ao cliente.
+
+    Attributes:
+        host: Endereço IP onde o servidor escuta conexões.
+        porta: Porta TCP utilizada pelo servidor.
+        chave_as: Chave mestra compartilhada com o Authentication Server
+            (AS), utilizada para decifrar TGTs.
+        chave_servico: Chave mestra do serviço protegido, utilizada para
+            cifrar Service Tickets.
+    """
+    def __init__(self, host, porta, chave_as, chave_servico): 
+        """Inicia o servidor TCP do TGS.
+
+        Cria o socket de escuta, associa-o ao endereço configurado e aceita
+        conexões de clientes continuamente. Cada conexão é tratada em uma
+        thread independente.
+        """      
         self.host = host
         self.porta = porta
         self.chave_as = chave_as
         self.chave_servico = chave_servico
 
-    def iniciar(self):    
+    def iniciar(self):
+        """Inicia o servidor TCP do TGS.
+
+        Cria o socket de escuta, associa-o ao endereço configurado e aceita
+        conexões de clientes continuamente. Cada conexão é tratada em uma
+        thread independente.
+        """   
         servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -43,6 +70,24 @@ class TGSServer:
             thread.start()
 
     def atender_cliente(self, con, addr):
+        """Processa uma requisição recebida de um cliente.
+
+        O método executa o fluxo do protocolo Kerberos no TGS:
+
+        1. Recebe a mensagem da rede.
+        2. Valida o tipo da mensagem.
+        3. Extrai o TGT e o nome do serviço solicitado.
+        4. Decifra e valida o TGT.
+        5. Gera um Service Ticket e uma nova chave de sessão Cliente↔Serviço.
+        6. Monta e envia uma resposta do tipo ``MSG_TGS_REPLY``.
+
+        Caso qualquer etapa falhe, uma mensagem ``MSG_ERROR`` é enviada ao
+        cliente.
+
+        Args:
+            con: Socket da conexão estabelecida com o cliente.
+            addr: Endereço do cliente conectado.
+        """
         try:
             # 1. Recebe a mensagem
             dados = con.recv(4096)
@@ -127,17 +172,22 @@ class TGSServer:
             con.close()
     
     def _validar_tgt(self, tgt_cif: bytes):
-        """Decifra e valida um TGT.
+        """Decifra e valida um Ticket Granting Ticket (TGT).
+
+        O ticket é decifrado utilizando a chave mestra compartilhada com o
+        Authentication Server (AS). Após a decifragem, são extraídos os
+        campos do ticket e verificada sua validade temporal.
 
         Args:
             tgt_cif: TGT cifrado (nonce + ciphertext AES-GCM).
 
         Returns:
             tuple[bytes, bytes]:
-                (nome_usuario, chave_sessao)
+                Tupla contendo o nome do usuário e a chave de sessão
+                Cliente↔TGS.
 
         Raises:
-            ValueError: Ticket inválido ou expirado.
+            ValueError: Se o ticket for inválido, corrompido ou expirado.
         """
         try:
             ticket = decifrar_aes_gcm(self.chave_as, tgt_cif)
@@ -157,14 +207,21 @@ class TGSServer:
         return nome_usuario, chave_sessao
     
     def _gerar_service_ticket(self, nome_usuario: bytes):
-        """Gera um Service Ticket e uma nova chave de sessão Cliente↔Serviço.
+        """Gera um Service Ticket para o serviço solicitado.
+
+        Cria uma nova chave de sessão Cliente↔Serviço, monta um Service
+        Ticket contendo as informações do usuário autenticado e cifra o
+        ticket utilizando a chave mestra do serviço.
 
         Args:
             nome_usuario: Nome do usuário autenticado.
 
         Returns:
             tuple[bytes, bytes]:
-                (service_ticket_cifrado, chave_sessao_cliente_servico)
+                Tupla contendo:
+
+                - o Service Ticket cifrado;
+                - a nova chave de sessão Cliente↔Serviço.
         """
         chave_cliente_servico = os.urandom(16)
 
@@ -190,7 +247,21 @@ class TGSServer:
         chave_cliente_servico: bytes,
         chave_cliente_tgs: bytes,
     ):
-        """Monta a resposta enviada ao cliente."""
+        """Monta a resposta enviada ao cliente pelo TGS.
+
+        A chave de sessão Cliente↔Serviço é cifrada utilizando a chave de
+        sessão Cliente↔TGS. O payload resultante contém o Service Ticket
+        cifrado e a chave de sessão protegida.
+
+        Args:
+            service_ticket_cif: Service Ticket cifrado com a chave do serviço.
+            chave_cliente_servico: Nova chave de sessão Cliente↔Serviço.
+            chave_cliente_tgs: Chave de sessão Cliente↔TGS extraída do TGT.
+
+        Returns:
+            bytes: Mensagem serializada do tipo ``MSG_TGS_REPLY`` pronta para
+            envio ao cliente.
+        """
 
         chave_cliente_servico_cif = cifrar_aes_gcm(
             chave_cliente_tgs,
