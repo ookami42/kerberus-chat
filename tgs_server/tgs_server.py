@@ -12,6 +12,7 @@ from .message import (
     desempacotar,
     empacotar,
     MSG_TGS_REQUEST,
+    MSG_TGS_REPLY,
     MSG_ERROR,
 )
 
@@ -86,10 +87,20 @@ class TGSServer:
 
             # 6. Decifra o TGT
             try:
-                nome_usuario, chave_sessao = self._validar_tgt(tgt_cif)
+                nome_usuario, chave_cliente_tgs = self._validar_tgt(tgt_cif)
+
                 service_ticket_cifrado, chave_cliente_servico = (
                     self._gerar_service_ticket(nome_usuario)
                 )
+                
+                resposta = self._montar_resposta_tgs(
+                    service_ticket_cifrado,
+                    chave_cliente_servico,
+                    chave_cliente_tgs,
+                )
+                
+                con.sendall(resposta)
+
                 print(f"[TGS] Service Ticket gerado ({len(service_ticket_cifrado)} bytes)")
             except ValueError as e:
                 con.sendall(
@@ -172,6 +183,30 @@ class TGSServer:
         )
 
         return ticket_cifrado, chave_cliente_servico
+    
+    def _montar_resposta_tgs(
+        self,
+        service_ticket_cif: bytes,
+        chave_cliente_servico: bytes,
+        chave_cliente_tgs: bytes,
+    ):
+        """Monta a resposta enviada ao cliente."""
+
+        chave_cliente_servico_cif = cifrar_aes_gcm(
+            chave_cliente_tgs,
+            chave_cliente_servico,
+        )
+
+        payload = (
+            len(service_ticket_cif).to_bytes(2, "big")
+            + service_ticket_cif
+            + chave_cliente_servico_cif
+        )
+
+        return empacotar(
+            MSG_TGS_REPLY,
+            payload,
+        )
 
 if __name__ == "__main__":
     servidor = TGSServer(
