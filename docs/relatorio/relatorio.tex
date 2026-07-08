@@ -1,0 +1,469 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{parskip}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codekeyword}{RGB}{0,0,150}
+\definecolor{codecomment}{RGB}{100,100,100}
+\definecolor{codestring}{RGB}{150,0,0}
+
+\lstset{
+    basicstyle=\ttfamily\scriptsize,
+    backgroundcolor=\color{codebg},
+    keywordstyle=\color{codekeyword}\bfseries,
+    commentstyle=\color{codecomment}\itshape,
+    stringstyle=\color{codestring},
+    breaklines=true,
+    breakatwhitespace=false,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny,
+    xleftmargin=1.5em,
+    tabsize=4,
+    showstringspaces=false,
+    language=Python
+}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+\setlist[itemize]{topsep=2pt, itemsep=1pt, parsep=0pt}
+\setlist[enumerate]{topsep=2pt, itemsep=1pt, parsep=0pt}
+
+\title{\textbf{Kerberos Chat: Autenticação Kerberos com Criptografia Simétrica}\\
+\large Relatório Técnico}
+\author{Grupo 4 \\ \small Segurança Computacional --- Universidade de Brasília (UnB) \\ \small Prof. Roberto Rodrigues Filho}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\section{Introdução}
+
+Este relatório descreve a implementação didática do protocolo \textbf{Kerberos} realizada
+para a disciplina de Segurança Computacional. O sistema utiliza exclusivamente
+\textbf{criptografia de chave simétrica} (AES-128-GCM e PBKDF2-HMAC-SHA256) para implementar
+o fluxo completo de autenticação baseado em tickets: um cliente se autentica uma única vez
+perante um \emph{Authentication Server} (AS) e, a partir daí, obtém acesso a serviços de rede
+sem precisar retransmitir sua senha, por meio de tickets emitidos por um \emph{Ticket Granting
+Server} (TGS) e validados por um serviço protegido com autenticação mútua.
+
+\section{Arquitetura Geral}
+
+O sistema é composto por quatro componentes independentes, que se comunicam por sockets
+TCP:
+
+\begin{itemize}
+    \item \textbf{Authentication Server (AS)} --- porta 5450. Conhece a base de usuários
+    e a chave mestra \texttt{as\_master.key}. Autentica o usuário pelo nome e emite o
+    \emph{Ticket Granting Ticket} (TGT).
+    \item \textbf{Ticket Granting Server (TGS)} --- porta 5451. Conhece as chaves mestras
+    \texttt{as\_master.key} (para abrir TGTs) e \texttt{service\_master.key} (para selar
+    tickets de serviço). Troca um TGT válido por um \emph{Service Ticket}.
+    \item \textbf{Serviço protegido (chat)} --- porta 5452. Conhece apenas
+    \texttt{service\_master.key}. Valida o Service Ticket e realiza autenticação mútua
+    com o cliente antes de liberar o canal de chat.
+    \item \textbf{Cliente} --- orquestra as três etapas do fluxo (AS~$\to$~TGS~$\to$~Serviço)
+    e, ao final, troca mensagens de chat com o serviço.
+\end{itemize}
+
+Todos os servidores rodam em \texttt{127.0.0.1}, atendem múltiplas conexões via
+\texttt{threading.Thread} e usam \texttt{struct.pack}/\texttt{struct.unpack} para
+serialização binária (sem dependências externas de serialização).
+
+\subsection{Fluxo de mensagens}
+
+\begin{lstlisting}[language=,basicstyle=\ttfamily\tiny,frame=single,numbers=none]
+CLIENTE                    AS                        TGS                    SERVICO
+  |--- MSG_AUTH_REQUEST -->|                          |                       |
+  |    "alice"             | deriva/consulta K_c      |                       |
+  |                        | gera K_c_AS              |                       |
+  |                        | monta TGT cifrado        |                       |
+  |<-- MSG_AUTH_REPLY -----|                          |                       |
+  |    salt+TGT_cif+K_c_AS_cif                        |                       |
+  |                                                   |                       |
+  |--- MSG_TGS_REQUEST ------------------------------>|                       |
+  |    TGT_cif + "chat"                               | decifra TGT           |
+  |                                                    | checa validade        |
+  |                                                    | gera K_c_svc          |
+  |                                                    | monta ServiceTicket   |
+  |<-- MSG_TGS_REPLY ---------------------------------|                       |
+  |    ServiceTicket_cif + K_c_svc_cif                                        |
+  |                                                                           |
+  |--- MSG_SVC_REQUEST ------------------------------------------------------>|
+  |    ServiceTicket_cif + Authenticator_cif                                  | decifra ticket
+  |                                                                           | decifra authenticator
+  |                                                                           | valida nome+timestamp
+  |<-- MSG_SVC_REPLY ---------------------------------------------------------|  timestamp+1, cifrado
+  |    verifica timestamp+1 -> "Autenticacao mutua OK!"                       |
+  |                                                                           |
+  |--- MSG_CHAT -------------------------------------------------------------->|
+  |<-- MSG_ECHO ----------------------------------------------------------------|
+\end{lstlisting}
+
+\subsection{Formato das mensagens}
+
+Toda mensagem trafega com um cabeçalho fixo de 6 bytes seguido do payload, montado
+pela função \texttt{empacotar} (formato \texttt{struct} \texttt{">HI"}):
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Campo & Tamanho & Tipo \\
+\midrule
+tipo da mensagem & 2 bytes & \texttt{unsigned short}, big-endian \\
+tamanho do payload & 4 bytes & \texttt{unsigned int}, big-endian \\
+payload & $N$ bytes & conteúdo da mensagem \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{center}
+\small
+\begin{tabular}{@{}clll@{}}
+\toprule
+\# & Constante & Origem $\to$ Destino & Payload \\
+\midrule
+1 & \texttt{MSG\_AUTH\_REQUEST} & Cliente $\to$ AS & nome do usuário \\
+2 & \texttt{MSG\_AUTH\_REPLY} & AS $\to$ Cliente & salt(16) + TGT\_cif + K\_c\_AS\_cif \\
+3 & \texttt{MSG\_TGS\_REQUEST} & Cliente $\to$ TGS & TGT\_cif + nome do serviço \\
+4 & \texttt{MSG\_TGS\_REPLY} & TGS $\to$ Cliente & ServiceTicket\_cif + K\_c\_svc\_cif \\
+5 & \texttt{MSG\_SVC\_REQUEST} & Cliente $\to$ Serviço & ServiceTicket\_cif + Authenticator\_cif \\
+6 & \texttt{MSG\_SVC\_REPLY} & Serviço $\to$ Cliente & timestamp+1, cifrado \\
+7 & \texttt{MSG\_CHAT} & Cliente $\to$ Serviço & texto da mensagem \\
+8 & \texttt{MSG\_ECHO} & Serviço $\to$ Cliente & eco do texto \\
+9 & \texttt{MSG\_ERROR} & qualquer $\to$ qualquer & mensagem de erro \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Blocos de tamanho variável (TGT, Service Ticket, chaves de sessão, authenticator) são
+sempre precedidos por um prefixo de 4 bytes (\texttt{unsigned int}, big-endian) indicando
+seu comprimento, o que permite concatenar múltiplos blobs cifrados dentro de um único
+payload sem ambiguidade.
+
+\section{Implementação do Authentication Server (AS)}
+
+O AS é o único componente que conhece as credenciais dos usuários. A base de usuários é
+um arquivo JSON (\texttt{data/user\_db.json}), gerenciado pela classe \texttt{UserDB}
+(\texttt{as\_server/user\_db.py}), com o formato:
+
+\begin{lstlisting}[language=,basicstyle=\ttfamily\scriptsize]
+{
+  "users": {
+    "alice": {
+      "salt": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+      "hash_chave": "..."
+    }
+  }
+}
+\end{lstlisting}
+
+Cada usuário possui um \texttt{salt} aleatório de 16 bytes e um \texttt{hash\_chave} que,
+na verdade, \'e a própria chave simétrica do usuário: \texttt{PBKDF2(senha, salt)}
+(seção~\ref{sec:kdf}). Não há uma etapa separada de ``verificação de senha''; o
+conhecimento da senha é provado de forma implícita mais adiante, quando o cliente precisa
+recalcular exatamente essa mesma chave para decifrar sua chave de sessão.
+
+O cadastro de usuários (\texttt{scripts/cadastrar\_usuario.py}) gera o salt com
+\texttt{os.urandom(16)}, deriva a chave com PBKDF2 e grava o par \texttt{(salt, hash\_chave)}
+no JSON --- a senha em texto puro nunca é persistida.
+
+\subsection{Fluxo de atendimento (\texttt{atender\_cliente})}
+
+Ao receber uma conexão, o AS executa os seguintes passos:
+
+\begin{enumerate}
+    \item Lê o cabeçalho de 6 bytes e confirma que o tipo é \texttt{MSG\_AUTH\_REQUEST};
+    caso contrário, responde \texttt{MSG\_ERROR}.
+    \item Lê o payload (nome do usuário, UTF-8) e busca o registro correspondente em
+    \texttt{UserDB}.
+    \item Extrai o \texttt{salt} e a chave do cliente $K_c$ (o \texttt{hash\_chave} salvo).
+    \item Gera uma chave de sessão aleatória $K_{c,AS} = \texttt{os.urandom(16)}$, que será
+    compartilhada entre o cliente e o TGS.
+    \item Monta o TGT com \texttt{criar\_ticket(nome, K\_c\_AS, timestamp, lifetime)} e o
+    cifra com a chave mestra do AS (\texttt{as\_master.key}), usando AES-128-GCM.
+    \item Cifra $K_{c,AS}$ com a chave do cliente $K_c$ --- só quem souber a senha correta
+    conseguirá decifrar essa chave de sessão.
+    \item Responde com \texttt{MSG\_AUTH\_REPLY}, cujo payload é
+    \texttt{salt(16) + len(TGT\_cif) + TGT\_cif + len(K\_c\_AS\_cif) + K\_c\_AS\_cif}.
+\end{enumerate}
+
+\begin{lstlisting}
+K_c_AS = os.urandom(16)
+ticket = criar_ticket(nome=nome_usuario, chave_sessao=K_c_AS,
+                       timestamp=int(time.time()), lifetime_min=LIFETIME_TICKET)
+ticket_cifrado = cifrar_aes_gcm(self.chave_mestra, ticket)
+K_c_AS_cifrada = cifrar_aes_gcm(K_c, K_c_AS)
+payload_resposta = (
+    salt
+    + struct.pack("!I", len(ticket_cifrado)) + ticket_cifrado
+    + struct.pack("!I", len(K_c_AS_cifrada)) + K_c_AS_cifrada
+)
+\end{lstlisting}
+
+O TGT nunca é decifrado pelo cliente: ele é apenas repassado como um blob opaco ao TGS
+na próxima etapa. Isso garante que somente quem possui \texttt{as\_master.key} (o AS e o
+TGS) pode ler ou forjar o conteúdo do ticket.
+
+\section{Implementação do Ticket Granting Server (TGS)}
+
+O TGS é o único componente que conhece \emph{as duas} chaves mestras do sistema:
+\texttt{as\_master.key} (para abrir TGTs emitidos pelo AS) e \texttt{service\_master.key}
+(para selar Service Tickets endereçados ao serviço protegido). Ele funciona como o
+intermediário de confiança que traduz um TGT em um Service Ticket, sem que o cliente
+jamais precise reapresentar sua senha.
+
+\subsection{Fluxo de atendimento}
+
+Ao receber \texttt{MSG\_TGS\_REQUEST} (payload \texttt{[4B len][TGT\_cif][4B len][nome\_servico]}):
+
+\begin{enumerate}
+    \item Decifra o TGT com \texttt{as\_master.key}. Se a autenticação do AES-GCM falhar
+    (\texttt{InvalidTag}), responde \texttt{MSG\_ERROR "TGT invalido"}.
+    \item Extrai do ticket o nome do usuário, a chave de sessão $K_{c,AS}$, o timestamp de
+    emissão e o \emph{lifetime}.
+    \item Verifica a expiração: se \texttt{timestamp + lifetime*60 <= tempo\_atual}, o
+    ticket é rejeitado (\texttt{"Ticket expirado"}).
+    \item Gera uma nova chave de sessão aleatória $K_{c,svc} = \texttt{os.urandom(16)}$,
+    que será compartilhada entre o cliente e o serviço.
+    \item Monta o Service Ticket com \texttt{criar\_ticket(nome, K\_c\_svc, tempo\_atual,
+    LIFETIME\_TICKET)} e o cifra com \texttt{service\_master.key}.
+    \item Cifra $K_{c,svc}$ com $K_{c,AS}$ (a chave extraída do TGT) --- só o cliente que
+    originalmente obteve o TGT consegue recuperar essa nova chave de sessão.
+    \item Responde \texttt{MSG\_TGS\_REPLY} com
+    \texttt{[4B len][ServiceTicket\_cif][4B len][K\_c\_svc\_cif]}.
+\end{enumerate}
+
+\begin{lstlisting}
+tgt_decifrado = decifrar_aes_gcm(self.as_master_key, tgt_cifrado)
+nome, k_c_as, timestamp, lifetime = extrair_ticket(tgt_decifrado)
+
+tempo_atual = int(time.time())
+if (timestamp + lifetime * 60) <= tempo_atual:
+    self._enviar_erro(conn, "Ticket expirado"); return
+
+k_c_svc = os.urandom(16)
+service_ticket = criar_ticket(nome, k_c_svc, tempo_atual, LIFETIME_TICKET)
+service_ticket_cifrado = cifrar_aes_gcm(self.service_master_key, service_ticket)
+k_c_svc_cifrado = cifrar_aes_gcm(k_c_as, k_c_svc)
+\end{lstlisting}
+
+O uso de duas chaves mestras distintas (uma para o par AS/TGS, outra para o par
+TGS/Serviço) segrega os domínios de confiança: comprometer a chave do serviço não permite
+forjar TGTs, e vice-versa.
+
+\section{Derivação de Chaves a partir da Senha (KDF)}
+\label{sec:kdf}
+
+A derivação de chaves a partir da senha do usuário usa \textbf{PBKDF2-HMAC-SHA256}
+(\texttt{cryptography.hazmat.primitives.kdf.pbkdf2.PBKDF2HMAC}):
+
+\begin{lstlisting}
+def derivar_chave(senha: bytes, salt: bytes) -> bytes:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=TAMANHO_CHAVE,   # 16 bytes (128 bits)
+        salt=salt,               # 16 bytes, unico por usuario
+        iterations=100_000,
+    )
+    return kdf.derive(senha)
+\end{lstlisting}
+
+Parâmetros adotados:
+\begin{itemize}
+    \item \textbf{Hash subjacente:} SHA-256.
+    \item \textbf{Iterações:} 100.000 --- torna cada tentativa de força bruta
+    computacionalmente cara, sem inviabilizar o login legítimo (dezenas de milissegundos).
+    \item \textbf{Salt:} 16 bytes aleatórios, únicos por usuário e armazenados junto ao
+    \texttt{hash\_chave}. Impede ataques de \emph{rainbow table} e garante que dois
+    usuários com a mesma senha tenham chaves derivadas diferentes.
+    \item \textbf{Saída:} 16 bytes, usados diretamente como chave AES-128.
+\end{itemize}
+
+\textbf{Uso da chave derivada.} A chave $K_c = \text{PBKDF2}(\text{senha}, \text{salt})$
+cumpre dois papéis: (1) é o valor persistido em \texttt{user\_db.json} pelo AS como
+``credencial'' do usuário; e (2) é a própria chave simétrica usada para cifrar/decifrar
+$K_{c,AS}$ na troca com o AS. Assim, a senha nunca trafega pela rede: o cliente a lê
+localmente (via \texttt{getpass}, sem eco no terminal), recomputa $K_c$ com o mesmo salt
+recebido do AS e tenta decifrar $K_{c,AS}$. Uma senha incorreta produz uma chave diferente,
+e a verificação de integridade do AES-GCM (\emph{tag}) falha com \texttt{InvalidTag} ---
+essa falha de decifragem \emph{é} a verificação de senha do sistema.
+
+\section{Obtenção e Utilização de Tickets}
+
+TGT e Service Ticket compartilham a mesma estrutura binária, definida em
+\texttt{criar\_ticket}/\texttt{extrair\_ticket} (formato \texttt{struct} \texttt{">QIH"}):
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Campo & Tamanho & Descrição \\
+\midrule
+\texttt{timestamp} & 8 bytes (\texttt{Q}) & instante de emissão do ticket \\
+\texttt{lifetime\_min} & 4 bytes (\texttt{I}) & validade em minutos \\
+\texttt{len(nome)} & 2 bytes (\texttt{H}) & tamanho do nome do usuário \\
+\texttt{nome} & $N$ bytes & nome do usuário (UTF-8) \\
+\texttt{chave\_sessao} & 16 bytes & chave de sessão embutida no ticket \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A diferença entre os dois tickets está em \emph{quem os cifra} e \emph{qual chave de
+sessão carregam}:
+
+\begin{itemize}
+    \item \textbf{TGT}: cifrado com \texttt{as\_master.key}; carrega $K_{c,AS}$ (chave
+    cliente$\leftrightarrow$TGS). Emitido pelo AS, consumido pelo TGS.
+    \item \textbf{Service Ticket}: cifrado com \texttt{service\_master.key}; carrega
+    $K_{c,svc}$ (chave cliente$\leftrightarrow$serviço). Emitido pelo TGS, consumido pelo
+    serviço.
+\end{itemize}
+
+Em ambos os casos, o ticket é \emph{opaco} para o cliente: ele recebe apenas o blob
+cifrado (\texttt{nonce || ciphertext || tag}) e o retransmite ao destinatário correto na
+etapa seguinte, sem jamais decifrar seu conteúdo. O \texttt{LIFETIME\_TICKET} padrão é de
+480 minutos (8 horas); o TGS rejeita TGTs expirados comparando
+\texttt{timestamp + lifetime*60} com o instante atual antes de emitir qualquer Service
+Ticket.
+
+\section{Mecanismo de Autenticação Mútua}
+
+Depois de obter o Service Ticket, o cliente prova ao serviço que ele --- e não um
+atacante que apenas copiou o ticket --- é o dono legítimo da sessão, construindo um
+\textbf{Authenticator}:
+
+\begin{lstlisting}
+# Authenticator: [2B len(nome)][nome][8B timestamp]
+nome_b = self.usuario.encode()
+auth = struct.pack(">H", len(nome_b)) + nome_b + struct.pack(">Q", ts_original)
+auth_cifrado = cifrar_aes_gcm(self.k_c_svc, auth)
+\end{lstlisting}
+
+O cliente envia \texttt{MSG\_SVC\_REQUEST} com \texttt{ServiceTicket\_cif + Authenticator\_cif}.
+O serviço então:
+
+\begin{enumerate}
+    \item Decifra o Service Ticket com \texttt{service\_master.key}, recuperando o nome do
+    usuário e a chave de sessão $K_{c,svc}$.
+    \item Decifra o Authenticator com $K_{c,svc}$ --- só quem possui a chave de sessão
+    correta (ou seja, quem passou pelo AS e pelo TGS legitimamente) consegue produzir um
+    Authenticator que decifre com sucesso.
+    \item Confere que o nome no Authenticator coincide com o nome no ticket.
+    \item Confere que o timestamp do Authenticator está dentro de uma janela de
+    \texttt{JANELA\_AUTH = 300} segundos (5 minutos) em relação ao relógio local, rejeitando
+    com \texttt{"Timestamp fora da janela (possível replay attack)"} caso contrário. Essa
+    janela é a defesa contra reenvio (\emph{replay}) de um Authenticator capturado.
+    \item Responde \texttt{MSG\_SVC\_REPLY} cifrando \texttt{timestamp\_original + 1} com
+    $K_{c,svc}$.
+\end{enumerate}
+
+O cliente decifra a resposta e confere se o valor recebido é exatamente
+\texttt{timestamp\_original + 1}. Se for, o cliente tem certeza de que o servidor do outro
+lado realmente possui $K_{c,svc}$ --- portanto é o serviço genuíno, e não um impostor ---
+completando a \textbf{autenticação mútua}: o cliente provou sua identidade ao serviço (via
+Authenticator) e o serviço provou a sua ao cliente (via o incremento do timestamp).
+Somente após essa confirmação o canal de chat (\texttt{MSG\_CHAT}/\texttt{MSG\_ECHO}) é
+liberado.
+
+\section{Algoritmos Criptográficos e Justificativa}
+
+\begin{itemize}
+    \item \textbf{AES-128-GCM} (\texttt{cryptography.hazmat.primitives.ciphers.aead.AESGCM})
+    para toda cifragem simétrica (TGT, Service Ticket, chaves de sessão, Authenticator,
+    mensagens de confirmação). GCM é um modo AEAD (\emph{Authenticated Encryption with
+    Associated Data): uma única chamada cifra os dados \emph{e} produz uma tag de
+    autenticação, dispensando a composição manual de uma cifra de bloco com um MAC
+    separado (como em Encrypt-then-MAC), o que reduz a superfície de erro de
+    implementação. Cada chamada gera um \emph{nonce} aleatório novo de 12 bytes
+    (\texttt{os.urandom(12)}), prefixado ao texto cifrado no formato
+    \texttt{nonce || ciphertext || tag}, evitando reuso de nonce com a mesma chave --- o
+    erro clássico que quebra a confidencialidade do GCM.
+    \item \textbf{PBKDF2-HMAC-SHA256} para derivação de chave a partir da senha
+    (seção~\ref{sec:kdf}), com 100.000 iterações e salt de 16 bytes por usuário.
+    PBKDF2 foi escolhido por estar disponível nativamente na mesma biblioteca já usada
+    para o AES-GCM (\texttt{cryptography}), evitando dependências extras, e por ser
+    amplamente documentado e auditado. Alternativas mais recentes e resistentes a
+    hardware dedicado (\emph{memory-hard}), como \texttt{scrypt} ou \texttt{Argon2},
+    ofereceriam melhor proteção contra ataques com GPU/ASIC, mas foram descartadas neste
+    projeto didático em favor da simplicidade e da familiaridade da equipe com PBKDF2.
+    \item \textbf{Chaves de 128 bits}: suficiente para os fins didáticos do projeto e
+    consistente entre todas as chaves do sistema (mestras, de sessão e derivada de senha),
+    simplificando o formato binário dos tickets (campo fixo de 16 bytes).
+\end{itemize}
+
+\textbf{Limitações de segurança conhecidas.} Nenhum dado associado (\emph{AAD}) é
+vinculado às cifragens AES-GCM (\texttt{associated\_data=None} em todas as chamadas), de
+forma que o contexto de uso de um ciphertext (por exemplo, "isto é um TGT" versus "isto é
+uma chave de sessão") não é criptograficamente amarrado ao próprio ciphertext. Além disso,
+a proteção contra replay do Authenticator depende exclusivamente da janela de tempo
+\texttt{JANELA\_AUTH} (5 minutos), sem um cache de nonces/timestamps já vistos --- um
+Authenticator capturado poderia, em princípio, ser reenviado contra o serviço dentro dessa
+janela. Ambas são simplificações aceitáveis para um projeto didático, mas seriam
+endereçadas em um sistema de produção.
+
+\section{Dificuldades Encontradas e Aprendizados}
+
+\begin{itemize}
+    \item \textbf{Consistência de contratos entre módulos desenvolvidos em paralelo.}
+    O projeto foi dividido em issues atômicas (AS, TGS, Serviço e Cliente, cada um por uma
+    pessoa diferente), o que acelerou o desenvolvimento mas exigiu manter rigorosamente
+    sincronizadas as assinaturas de funções compartilhadas (como \texttt{criar\_ticket} e
+    \texttt{empacotar}/\texttt{desempacotar}) e o formato binário dos tickets e mensagens.
+    Divergências nessas assinaturas só se manifestam na integração entre componentes, não
+    em testes unitários isolados --- reforçando a importância de testes de integração
+    ponta a ponta, além dos testes unitários por módulo.
+    \item \textbf{Definição de onde vive o código compartilhado.} Decidir que
+    \texttt{common/protocol.py} deveria ser a interface única, mesmo quando a
+    implementação de fato residia em \texttt{tgs\_server/message.py}, evidenciou a
+    necessidade de acordar, desde o início do projeto, um dono claro para cada módulo
+    compartilhado entre AS/TGS/Serviço/Cliente.
+    \item \textbf{Leitura confiável de sockets TCP.} Como \texttt{socket.recv()} não
+    garante receber a mensagem inteira em uma única chamada, foi necessário implementar
+    funções auxiliares de leitura exata (\texttt{\_recv\_exato}/\texttt{\_receber\_exato})
+    que fazem laço até acumular o número de bytes esperado, tanto para o cabeçalho de 6
+    bytes quanto para os payloads de tamanho variável.
+    \item \textbf{Decisão de projeto sobre o papel da senha.} Optar por usar a própria
+    saída do PBKDF2 como chave simétrica (em vez de compará-la a um hash salvo à parte)
+    simplificou o protocolo, mas exigiu cuidado para deixar claro, na documentação interna
+    do projeto, que essa chave nunca deve ser tratada como um mero "hash de verificação":
+    ela circula como segredo criptográfico.
+    \item \textbf{Balancear simplicidade e robustez na proteção contra replay.} Implementar
+    uma janela de tempo para o Authenticator foi mais simples que manter um cache de
+    mensagens já vistas, mas deixou uma janela de vulnerabilidade residual, discutida na
+    seção anterior --- um compromisso consciente entre esforço de implementação e robustez
+    de segurança, comum em projetos com prazo limitado.
+    \item \textbf{Aprendizado geral.} A implementação reforçou, na prática, por que o
+    Kerberos evita retransmitir a senha do usuário a cada serviço acessado (reduzindo a
+    superfície de exposição da credencial), por que tickets cifrados com chaves mestras
+    distintas por segmento de confiança limitam o dano de uma chave comprometida, e por
+    que autenticação mútua (não apenas cliente autenticando-se ao servidor) é essencial
+    quando o cliente também precisa confiar no serviço que está acessando.
+\end{itemize}
+
+\section{Conclusão}
+
+O projeto implementou, de ponta a ponta, um fluxo Kerberos simplificado com autenticação
+inicial via senha, emissão e troca de tickets entre AS, TGS e um serviço protegido, e
+autenticação mútua baseada em desafio-resposta com timestamp. As escolhas
+criptográficas (AES-128-GCM e PBKDF2-HMAC-SHA256) equilibram simplicidade de implementação
+com garantias reais de confidencialidade, integridade e resistência a ataques de força
+bruta sobre a senha, dentro do escopo didático da disciplina.
+
+\end{document}
