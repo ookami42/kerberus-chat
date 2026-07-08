@@ -192,16 +192,15 @@ def extrair_ticket(blob: bytes) -> tuple[bytes, bytes, int, int]:
 
 **Arquivo:** `scripts/gerar_chaves.py`
 
-**Descrição:** Script que gera 3 chaves aleatórias de 16 bytes usando `os.urandom(16)` e salva em arquivos na pasta `keys/`.
+**Descrição:** Script que gera 2 chaves aleatórias de 16 bytes usando `os.urandom(16)` e salva em arquivos na pasta `keys/`.
 
 ```
 keys/as_master.key       → 16 bytes
-keys/tgs_master.key      → 16 bytes
 keys/service_master.key  → 16 bytes
 ```
 
 **Critério de aceite:**
-- [ ] `python scripts/gerar_chaves.py` cria os 3 arquivos
+- [ ] `python scripts/gerar_chaves.py` cria os 2 arquivos
 - [ ] Cada arquivo tem exatamente 16 bytes
 - [ ] Se executar de novo, sobrescreve os arquivos
 - [ ] A pasta `keys/` é criada se não existir

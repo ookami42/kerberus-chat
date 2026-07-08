@@ -1,3 +1,10 @@
+"""Servico Protegido: valida Service Ticket, autenticacao mutua e eco.
+
+Recebe requisicoes do cliente (MSG_SVC_REQUEST), valida o Service Ticket
+e o authenticator, realiza autenticacao mutua (timestamp+1) e ecoa
+mensagens de chat em texto claro.
+"""
+
 import socket
 import threading
 import struct
@@ -115,6 +122,11 @@ class ServicoKerberos:
         finally:
             con.close()
 
-if __name__ == "__main__":
+def main():
+    """Ponto de entrada do servidor de servico."""
     svc = ServicoKerberos()
     svc.iniciar()
+
+
+if __name__ == "__main__":
+    main()
