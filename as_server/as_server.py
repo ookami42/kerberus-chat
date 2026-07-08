@@ -255,18 +255,18 @@ class ASServer:
                 pass
 
 
-def _carregar_chave_mestra(AS_MASTER_KEY_PATH) -> bytes:
+def _carregar_chave_mestra() -> bytes:
     """Carrega a chave mestra do Authentication Server (AS).
-
-    Args:
-        caminho: Caminho do arquivo contendo a chave mestra.
 
     Returns:
         Chave mestra em bytes. Caso o arquivo não exista, retorna
         ``b""``.
     """
     if not os.path.exists(AS_MASTER_KEY_PATH):
-        print(f"[AS] Aviso: arquivo de chave mestra não encontrado em {AS_MASTER_KEY_PATH}")
+        print(
+            f"[AS] Aviso: arquivo de chave mestra não encontrado em "
+            f"{AS_MASTER_KEY_PATH}"
+        )
         return b""
 
     with open(AS_MASTER_KEY_PATH, "rb") as arquivo:
@@ -275,7 +275,7 @@ def _carregar_chave_mestra(AS_MASTER_KEY_PATH) -> bytes:
 def main():
     """Ponto de entrada do Authentication Server."""
     banco_usuarios = UserDB(USER_DB_PATH)
-    chave_mestra_as = _carregar_chave_mestra(AS_MASTER_KEY_PATH)
+    chave_mestra_as = _carregar_chave_mestra()
     servidor = ASServer(
         host=AS_HOST,
         porta=AS_PORT,
