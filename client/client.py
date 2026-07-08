@@ -1,3 +1,9 @@
+"""Cliente Kerberos: orquestra o fluxo AS -> TGS -> Servico -> Chat.
+
+Executa os 3 passos do protocolo e, apos autenticacao mutua,
+abre um chat no terminal com o servico protegido.
+"""
+
 import getpass
 import socket
 import sys
@@ -150,7 +156,8 @@ class ClienteKerberos:
         finally:
             self.fechar()
             
-if __name__ == "__main__":
+def main():
+    """Ponto de entrada do cliente Kerberos."""
     cliente = ClienteKerberos()
     try:
         cliente.executar_passo1()
@@ -160,3 +167,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n[FALHA] Não foi possível completar o fluxo: {e}")
         cliente.fechar()
+
+
+if __name__ == "__main__":
+    main()

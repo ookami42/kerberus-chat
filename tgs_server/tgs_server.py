@@ -219,7 +219,7 @@ class TGSServer:
                 return
 
             # 7. Validar a expiracao do ticket
-            tempo_atual = time.time()
+            tempo_atual = int(time.time())
             if (timestamp + lifetime * 60) <= tempo_atual:
                 print(
                     f"[TGS] Ticket expirado para o usuario {nome_str} "

@@ -1,3 +1,10 @@
+"""Authentication Server: autentica usuarios e emite Ticket Granting Ticket.
+
+Recebe MSG_AUTH_REQUEST com nome do usuario, busca no UserDB,
+deriva a chave do cliente, gera K_c_AS, monta o TGT cifrado com
+as_master_key e envia MSG_AUTH_REPLY.
+"""
+
 import socket
 import threading
 import struct
@@ -272,15 +279,10 @@ def _carregar_chave_mestra(caminho: str = "keys/as_master.key") -> bytes:
         return arquivo.read()
 
 
-if __name__ == "__main__":
-    # Instancia o UserDB usando o caminho definido na configuração (issue #1)
+def main():
+    """Ponto de entrada do Authentication Server."""
     banco_usuarios = UserDB(USER_DB_PATH)
-
-    # Carrega a chave mestra do AS a partir de keys/as_master.key (issue #2)
     chave_mestra_as = _carregar_chave_mestra("keys/as_master.key")
-
-    # Cria o servidor utilizando host e port das configurações (issue #1),
-    # o UserDB da issue #9 e a chave mestra da issue #2
     servidor = ASServer(
         host=AS_HOST,
         porta=AS_PORT,
@@ -288,3 +290,7 @@ if __name__ == "__main__":
         chave_mestra=chave_mestra_as,
     )
     servidor.iniciar()
+
+
+if __name__ == "__main__":
+    main()

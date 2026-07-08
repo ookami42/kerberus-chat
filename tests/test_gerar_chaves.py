@@ -1,13 +1,16 @@
 """Testes unitários para scripts/gerar_chaves.py.
 
-Testa a geração das 3 chaves mestras: criação do diretório, tamanho
+Testa a geração das chaves mestras: criação do diretório, tamanho
 dos arquivos, conteúdo diferente entre si e entre execuções (issue #8).
 """
 
 import os
 import tempfile
 
-from scripts.gerar_chaves import gerar_chaves, _NOMES_CHAVES
+from common.config import TAMANHO_CHAVE, AS_MASTER_KEY_PATH, SVC_MASTER_KEY_PATH
+from scripts.gerar_chaves import gerar_chaves
+
+_NOMES_CHAVES = (os.path.basename(AS_MASTER_KEY_PATH), os.path.basename(SVC_MASTER_KEY_PATH))
 
 
 class TestGerarChaves:
@@ -20,25 +23,25 @@ class TestGerarChaves:
             gerar_chaves(keys_dir)
             assert os.path.isdir(keys_dir)
 
-    def test_cria_tres_arquivos(self):
-        """Gera exatamente os 3 arquivos de chave."""
+    def test_cria_dois_arquivos(self):
+        """Gera exatamente os 2 arquivos de chave."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             gerar_chaves(tmp_dir)
             for nome in _NOMES_CHAVES:
                 caminho = os.path.join(tmp_dir, nome)
                 assert os.path.isfile(caminho), f"Arquivo {nome} não foi criado"
 
-    def test_cada_arquivo_tem_16_bytes(self):
-        """Cada arquivo de chave tem exatamente 16 bytes."""
+    def test_cada_arquivo_tem_tamanho_correto(self):
+        """Cada arquivo de chave tem exatamente TAMANHO_CHAVE bytes."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             gerar_chaves(tmp_dir)
             for nome in _NOMES_CHAVES:
                 caminho = os.path.join(tmp_dir, nome)
                 tamanho = os.path.getsize(caminho)
-                assert tamanho == 16, f"{nome} tem {tamanho} bytes, esperado 16"
+                assert tamanho == TAMANHO_CHAVE, f"{nome} tem {tamanho} bytes, esperado {TAMANHO_CHAVE}"
 
     def test_arquivos_sao_diferentes(self):
-        """As 3 chaves geradas têm conteúdo diferente entre si."""
+        """As chaves geradas têm conteúdo diferente entre si."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             gerar_chaves(tmp_dir)
             conteudos = []
@@ -46,17 +49,17 @@ class TestGerarChaves:
                 caminho = os.path.join(tmp_dir, nome)
                 with open(caminho, "rb") as f:
                     conteudos.append(f.read())
-            assert len(set(conteudos)) == 3, "Há chaves duplicadas"
+            assert len(set(conteudos)) == len(_NOMES_CHAVES), "Há chaves duplicadas"
 
     def test_sobrescreve_arquivos_existentes(self):
-        """Executar duas vezes mantém 3 arquivos de 16 bytes."""
+        """Executar duas vezes mantém os arquivos de tamanho correto."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             gerar_chaves(tmp_dir)
             gerar_chaves(tmp_dir)
             for nome in _NOMES_CHAVES:
                 caminho = os.path.join(tmp_dir, nome)
                 assert os.path.isfile(caminho)
-                assert os.path.getsize(caminho) == 16
+                assert os.path.getsize(caminho) == TAMANHO_CHAVE
 
     def test_chaves_sao_diferentes_entre_execucoes(self):
         """Duas execuções geram chaves com conteúdo diferente."""

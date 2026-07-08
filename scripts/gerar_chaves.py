@@ -1,26 +1,33 @@
-"""Gera as 3 chaves mestras (AS, TGS, Serviço) e salva em keys/."""
+"""Gera as chaves mestras (AS, Serviço) e salva em keys/."""
 
-import os
+from os import path, urandom, makedirs
 
-_KEYS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "keys")
+from common.config import TAMANHO_CHAVE, AS_MASTER_KEY_PATH, SVC_MASTER_KEY_PATH
 
-_NOMES_CHAVES = ("as_master.key", "tgs_master.key", "service_master.key")
+_KEYS_DIR = path.dirname(AS_MASTER_KEY_PATH)
+_CHAVE_PATHS = (AS_MASTER_KEY_PATH, SVC_MASTER_KEY_PATH)
 
 
 def gerar_chaves(keys_dir: str | None = None) -> None:
-    """Gera 3 chaves aleatórias de 16 bytes e salva em keys/, sobrescrevendo se já existirem.
+    """Gera chaves aleatórias de TAMANHO_CHAVE bytes e salva em keys/, sobrescrevendo se já existirem.
 
     Args:
-        keys_dir: Diretório onde salvar as chaves. Se None, usa o diretório padrão keys/.
+        keys_dir: Diretório onde salvar as chaves. Se None, usa o diretório padrão de AS_MASTER_KEY_PATH.
     """
     if keys_dir is None:
         keys_dir = _KEYS_DIR
-    os.makedirs(keys_dir, exist_ok=True)
-    for nome_arquivo in _NOMES_CHAVES:
-        caminho = os.path.join(keys_dir, nome_arquivo)
-        with open(caminho, "wb") as arquivo:
-            arquivo.write(os.urandom(16))
+    makedirs(keys_dir, exist_ok=True)
+    for caminho in _CHAVE_PATHS:
+        nome_arquivo = path.basename(caminho)
+        caminho_saida = path.join(keys_dir, nome_arquivo)
+        with open(caminho_saida, "wb") as arquivo:
+            arquivo.write(urandom(TAMANHO_CHAVE))
+
+
+def main():
+    """Ponto de entrada do script de geracao de chaves."""
+    gerar_chaves()
 
 
 if __name__ == "__main__":
-    gerar_chaves()
+    main()
