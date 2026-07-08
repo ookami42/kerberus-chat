@@ -5,41 +5,29 @@ deriva a chave do cliente, gera K_c_AS, monta o TGT cifrado com
 as_master_key e envia MSG_AUTH_REPLY.
 """
 
-import socket
-import threading
-import struct
-import time
 import os
+import socket
+import struct
+import threading
+import time
 
-try:
-    # Importação relativa quando executado como módulo do pacote as_server
-    from .config import AS_HOST, AS_PORT, USER_DB_PATH
-    from .user_db import UserDB
-    from .protocol import (
-        MSG_AUTH_REQUEST,
-        MSG_AUTH_REPLY,
-        MSG_ERROR,
-        desempacotar,
-        empacotar,
-        criar_ticket,
-    )
-    from common.crypto import cifrar_aes_gcm
-except ImportError:
-    # Importação direta quando executado como script (python as_server.py)
-    from config import AS_HOST, AS_PORT, USER_DB_PATH
-    from user_db import UserDB
-    from protocol import (
-        MSG_AUTH_REQUEST,
-        MSG_AUTH_REPLY,
-        MSG_ERROR,
-        desempacotar,
-        empacotar,
-        criar_ticket,
-    )
-    try:
-        from common.crypto import cifrar_aes_gcm
-    except ImportError:
-        from crypto import cifrar_aes_gcm
+from common.config import (
+    AS_HOST,
+    AS_PORT,
+    USER_DB_PATH,
+    AS_MASTER_KEY_PATH,
+    LIFETIME_TICKET,
+)
+from common.protocol import (
+    MSG_AUTH_REQUEST,
+    MSG_AUTH_REPLY,
+    MSG_ERROR,
+    desempacotar,
+    empacotar,
+    criar_ticket,
+)
+from common.crypto import cifrar_aes_gcm
+from as_server.user_db import UserDB
 
 
 # Tamanho fixo do salt utilizado na derivação da chave do cliente
@@ -206,7 +194,7 @@ class ASServer:
                 self._enviar_erro(con)
                 return
 
-            usuario = self.user_db.buscar_usuario(nome_usuario)
+            usuario = self.user_db.buscar(nome_usuario)
             if usuario is None:
                 self._enviar_erro(con)
                 return
@@ -267,22 +255,27 @@ class ASServer:
                 pass
 
 
-def _carregar_chave_mestra(caminho: str = "keys/as_master.key") -> bytes:
-    """Carrega a chave mestra do AS a partir de um arquivo.
+def _carregar_chave_mestra(AS_MASTER_KEY_PATH) -> bytes:
+    """Carrega a chave mestra do Authentication Server (AS).
 
-    Se o arquivo não existir, exibe um aviso e retorna bytes vazios.
+    Args:
+        caminho: Caminho do arquivo contendo a chave mestra.
+
+    Returns:
+        Chave mestra em bytes. Caso o arquivo não exista, retorna
+        ``b""``.
     """
-    if not os.path.exists(caminho):
-        print(f"[AS] Aviso: arquivo de chave mestra não encontrado em {caminho}")
+    if not os.path.exists(AS_MASTER_KEY_PATH):
+        print(f"[AS] Aviso: arquivo de chave mestra não encontrado em {AS_MASTER_KEY_PATH}")
         return b""
-    with open(caminho, "rb") as arquivo:
-        return arquivo.read()
 
+    with open(AS_MASTER_KEY_PATH, "rb") as arquivo:
+        return arquivo.read()
 
 def main():
     """Ponto de entrada do Authentication Server."""
     banco_usuarios = UserDB(USER_DB_PATH)
-    chave_mestra_as = _carregar_chave_mestra("keys/as_master.key")
+    chave_mestra_as = _carregar_chave_mestra(AS_MASTER_KEY_PATH)
     servidor = ASServer(
         host=AS_HOST,
         porta=AS_PORT,
