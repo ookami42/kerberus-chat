@@ -77,21 +77,62 @@ class ServicoKerberos:
                 raise ValueError("Tipo de mensagem incorreto.")
 
             payload = self._recv_exato(con, tamanho)
+
+            if payload is None:
+                con.sendall(
+                    empacotar(
+                        MSG_ERROR,
+                        b"Payload invalido",
+                    )
+                )
+                return
             
             # Extração: [4b tam_st][ST] + [4b tam_auth][Auth]
             offset = 0
+
+            # Deve haver pelo menos 4 bytes para o tamanho do Service Ticket
+            if len(payload) < offset + 4:
+                raise ValueError("Payload incompleto")
+
             tam_st = struct.unpack(">I", payload[offset:offset+4])[0]
+
+            # Deve haver todos os bytes do Service Ticket
+            if len(payload) < offset + 4 + tam_st:
+                raise ValueError("Service ticket incompleto")
+
             st_cifrado = payload[offset+4 : offset+4+tam_st]
             
             offset += 4 + tam_st
+
+            # Deve haver pelo menos 4 bytes para o tamanho do Authenticator
+            if len(payload) < offset + 4:
+                raise ValueError("Payload incompleto")
+
             tam_auth = struct.unpack(">I", payload[offset:offset+4])[0]
+
+            # Deve haver todos os bytes do Authenticator
+            if len(payload) < offset + 4 + tam_auth:
+                raise ValueError("Authenticator incompleto")
+            
             auth_cifrado = payload[offset+4 : offset+4+tam_auth]
 
             # 2. Validar Service Ticket (Issue #23)
             print(f"[SERVIÇO] Validando ticket de {addr}...")
             st_decifrado = decifrar_aes_gcm(self.service_master_key, st_cifrado)
-            nome_tk, k_c_svc, ts_tk, life_tk = extrair_ticket(st_decifrado)
-            
+            nome_tk, k_c_svc, ts_tk, life_tk = extrair_ticket(st_decifrado) 
+            agora = int(time.time())
+
+            if agora > ts_tk + life_tk * 60:
+                print(f"[SERVIÇO] Service Ticket expirado de {addr}")
+
+                con.sendall(
+                    empacotar(
+                        MSG_ERROR,
+                        b"Service Ticket expirado",
+                    )
+                )
+                return
+
             # 3. Validar Authenticator (Issue #24)
             auth_decifrado = decifrar_aes_gcm(k_c_svc, auth_cifrado)
             
