@@ -103,19 +103,13 @@ class ASServer:
             pass
 
     def _extrair_salt(self, usuario) -> bytes:
-        """Extrai o salt (16 bytes) do registro do usuário.
+        """Extrai o salt (16 bytes) do registro do usuario.
 
-        Aceita registros em formato dict ou objetos com atributo `salt`.
-        Retorna um salt de 16 bytes ou bytes vazios quando indisponível.
+        Aceita registros em formato dict ou objetos com atributo ``salt``.
+        Retorna um salt de 16 bytes ou bytes vazios quando indisponivel.
         """
-        salt = None
         if isinstance(usuario, dict):
-            salt = (
-                usuario.get("salt")
-                or usuario.get("salt_hash")
-                or usuario.get("password_salt")
-                or usuario.get("senha_salt")
-            )
+            salt = usuario.get("salt")
         else:
             salt = getattr(usuario, "salt", None)
 
@@ -131,22 +125,17 @@ class ASServer:
         return salt
 
     def _extrair_chave_cliente(self, usuario) -> bytes:
-        """Extrai a chave do cliente (K_c) a partir do registro do usuário.
+        """Extrai a chave do cliente (K_c) a partir do registro do usuario.
 
         O hash armazenado serve como chave derivada da senha do cliente.
         """
         if isinstance(usuario, dict):
-            hash_usuario = (
-                usuario.get("hash_chave")
-                or usuario.get("hash")
-                or usuario.get("password_hash")
-                or usuario.get("senha_hash")
-                or b""
-            )
+            hash_usuario = usuario.get("hash_chave")
         else:
-            hash_usuario = getattr(usuario, "hash", None) or getattr(
-                usuario, "password_hash", None
-            ) or getattr(usuario, "senha_hash", None) or b""
+            hash_usuario = getattr(usuario, "hash_chave", None)
+
+        if hash_usuario is None:
+            return b""
 
         if isinstance(hash_usuario, str):
             try:
@@ -217,12 +206,11 @@ class ASServer:
 
             # Monta o TGT
             timestamp = int(time.time())
-            validade = 3600
             ticket = criar_ticket(
                 nome=nome_usuario.encode(),
                 chave_sessao=K_c_AS,
                 timestamp=timestamp,
-                lifetime_min=validade,
+                lifetime_min=LIFETIME_TICKET,
             )
 
             # Cifra o TGT com a chave mestra do AS (issue #2)
@@ -259,18 +247,27 @@ def _carregar_chave_mestra() -> bytes:
     """Carrega a chave mestra do Authentication Server (AS).
 
     Returns:
-        Chave mestra em bytes. Caso o arquivo não exista, retorna
-        ``b""``.
+        Chave mestra em bytes.
+
+    Raises:
+        FileNotFoundError: Se o arquivo de chave nao existir.
+        ValueError: Se o conteudo nao tiver exatamente 16 bytes.
     """
     if not os.path.exists(AS_MASTER_KEY_PATH):
-        print(
-            f"[AS] Aviso: arquivo de chave mestra não encontrado em "
-            f"{AS_MASTER_KEY_PATH}"
+        raise FileNotFoundError(
+            f"Arquivo de chave mestra do AS nao encontrado: "
+            f"{AS_MASTER_KEY_PATH}. Execute 'gerar-chaves' primeiro."
         )
-        return b""
 
     with open(AS_MASTER_KEY_PATH, "rb") as arquivo:
-        return arquivo.read()
+        chave = arquivo.read()
+
+    if len(chave) != 16:
+        raise ValueError(
+            f"Chave mestra do AS invalida: esperado 16 bytes, "
+            f"obtido {len(chave)} bytes"
+        )
+    return chave
 
 def main():
     """Ponto de entrada do Authentication Server."""
