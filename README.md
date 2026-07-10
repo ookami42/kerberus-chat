@@ -66,74 +66,71 @@ CLIENTE                    AS                        TGS                    SERV
 
 ## Como Executar
 
-> Pré-requisito: Python 3 com virtualenv. Execute uma vez:
-> ```bash
-> cd kerberos-chat
-> python3 -m venv .venv
-> source .venv/bin/activate
-> pip install -e .
-> ```
+### Instalação
 
-### 1. Gerar chaves mestras
+> Execute uma vez no diretório raiz do projeto:
 
 ```bash
-gerar-chaves
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .          # ← passo crítico: instala dependências e entrypoints
 ```
 
-Gera `keys/as_master.key` e `keys/service_master.key` (16 bytes cada).
+O `pip install -e .` instala o pacote em modo editável e registra os comandos
+`gerar-chaves`, `kerberos-servidor`, `kerberos-cliente`, etc.
 
-### 2. Cadastrar usuários
+### Execução (fluxo principal)
 
 ```bash
-cadastrar-usuario
+# Terminal 1 — gerar chaves e iniciar servidores
+source .venv/bin/activate
+gerar-chaves               # gera keys/as_master.key e keys/service_master.key (16 bytes)
+kerberos-servidor           # AS + TGS + Serviço em threads (Ctrl+C para parar)
 ```
 
-### 3. Iniciar os servidores (em terminais separados)
-
 ```bash
-# Terminal 1 — AS (porta 5450)
-as-server
-
-# Terminal 2 — TGS (porta 5451)
-tgs-server
-
-# Terminal 3 — Serviço (porta 5452)
-service-server
-```
-
-> Alternativa: inicie os 3 servidores de uma vez em um único terminal.
-> ```bash
-> kerberos-servidor
-> ```
-
-### 4. Executar o cliente
-
-```bash
+# Terminal 2 — cliente
+source .venv/bin/activate
 kerberos-cliente
 ```
 
 O cliente exibe um menu:
+
 ```
   1. Cadastrar usuario
   2. Fazer login
   0. Sair
 ```
 
-A opção 1 registra um novo usuário e retorna ao menu. A opção 2 inicia o fluxo Kerberos (AS → TGS → Serviço → Notas).
+A opção **1** registra um novo usuário e retorna ao menu (dispensa `cadastrar-usuario` manual).
+A opção **2** inicia o fluxo Kerberos (AS → TGS → Serviço) e abre o terminal de notas.
 
-### 5. Testes de ataque (opcional)
-
-```bash
-simular-ataque
-```
-
-Executa 4 cenários de ataque contra o sistema (requer servidores rodando).
-
-### 6. Testes unitários
+### Testes
 
 ```bash
-pytest tests/ -v
+source .venv/bin/activate
+python -m pytest tests/ -v
 ```
+
+### Comandos opcionais
+
+<details>
+<summary>Expandir</summary>
+
+```bash
+# Cadastrar usuário manualmente (sem abrir o cliente)
+cadastrar-usuario
+
+# Iniciar cada servidor em terminais separados
+as-server            # AS (porta 5450)
+tgs-server           # TGS (porta 5451)
+service-server       # Serviço (porta 5452)
+
+# Testes de ataque (requer servidores rodando)
+simular-ataque       # 4 cenários de ataque
+```
+
+</details>
 
 ---
 
@@ -183,7 +180,7 @@ kerberos-chat/
 │   ├── kerberos_demo.py            # Lança os 3 servidores em threads
 │   └── simular_ataque.py           # 4 cenários de ataque (requer servidores)
 │
-├── tests/                          ← Testes unitários (pytest, 83 testes)
+├── tests/                          ← Testes unitários (pytest, 106 testes)
 │   ├── conftest.py                 # Fixtures compartilhadas
 │   ├── test_cadastrar_usuario.py
 │   ├── test_config.py
@@ -263,6 +260,7 @@ Esse cabeçalho é montado pela função `empacotar()` em `common/protocol.py`.
 | 11 | `MSG_NOTE_READ` | Cliente → Serviço | `nome_do_arquivo (bytes)` |
 | 12 | `MSG_NOTE_WRITE` | Cliente → Serviço | `nome_arquivo\n<conteudo> (bytes)` |
 | 13 | `MSG_NOTE_REPLY` | Serviço → Cliente | `conteúdo ou confirmação (bytes)` |
+| 14 | `MSG_NOTE_DELETE` | Cliente → Serviço | `nome_do_arquivo (bytes)` |
 
 > `(12+*)` = nonce AES-GCM (12 bytes) + ciphertext de tamanho variável  
 > `(12+8)` = nonce (12 bytes) + ciphertext de 8 bytes (apenas um timestamp)  
