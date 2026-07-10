@@ -17,6 +17,7 @@ MSG_NOTE_LIST  = 10   # Cliente → Serviço: listar notas
 MSG_NOTE_READ  = 11   # Cliente → Serviço: ler uma nota
 MSG_NOTE_WRITE = 12   # Cliente → Serviço: criar ou sobrescrever nota
 MSG_NOTE_REPLY = 13   # Serviço → Cliente: resposta
+MSG_NOTE_DELETE = 14  # Cliente → Serviço: deletar nota
 
 _HEADER_FORMAT = ">HI"  # unsigned short (tipo) + unsigned int (tamanho), big-endian
 _HEADER_SIZE = struct.calcsize(_HEADER_FORMAT)  # 6

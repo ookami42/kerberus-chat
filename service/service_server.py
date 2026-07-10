@@ -23,6 +23,7 @@ from common.protocol import (
     empacotar, extrair_ticket,
     MSG_SVC_REQUEST, MSG_SVC_REPLY, MSG_ERROR,
     MSG_NOTE_LIST, MSG_NOTE_READ, MSG_NOTE_WRITE, MSG_NOTE_REPLY,
+    MSG_NOTE_DELETE,
 )
 
 
@@ -263,6 +264,12 @@ class ServicoKerberos:
                 con.sendall(empacotar(MSG_ERROR, erro.encode()))
                 return
 
+        elif tipo == MSG_NOTE_DELETE:
+            resposta, erro = self._deletar(nome_usuario, payload)
+            if erro:
+                con.sendall(empacotar(MSG_ERROR, erro.encode()))
+                return
+
         else:
             con.sendall(empacotar(MSG_ERROR, b"Comando desconhecido."))
             return
@@ -346,6 +353,31 @@ class ServicoKerberos:
             f.write(conteudo)
 
         return "OK: nota salva.", None
+
+    def _deletar(self, nome_usuario, payload):
+        """Deleta uma nota existente.
+
+        Args:
+            nome_usuario: Nome do dono da nota (str).
+            payload: Bytes com o nome do arquivo.
+
+        Returns:
+            tuple[str, str | None]: ("OK: nota deletada.", None) em caso de
+                                    sucesso, ou ("", mensagem_de_erro).
+        """
+        nome_arquivo = payload.decode(errors="replace").strip()
+        nome_seguro = os.path.basename(nome_arquivo)
+
+        if not nome_seguro:
+            return "", "Nome de arquivo invalido."
+
+        caminho = self._caminho_nota(nome_usuario, nome_seguro)
+
+        try:
+            os.remove(caminho)
+            return "OK: nota deletada.", None
+        except FileNotFoundError:
+            return "", "Nota nao encontrada."
 
     def _caminho_usuario(self, nome):
         """Retorna o diretorio de notas do usuario.

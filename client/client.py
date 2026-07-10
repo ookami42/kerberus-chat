@@ -11,10 +11,8 @@ Formatos de comando:
   /sair               — encerrar
 """
 
-import getpass
 import socket
 import struct
-import sys
 import time
 
 from cryptography.exceptions import InvalidTag
@@ -27,7 +25,18 @@ from common.protocol import (
     MSG_TGS_REQUEST, MSG_TGS_REPLY,
     MSG_SVC_REQUEST, MSG_SVC_REPLY,
     MSG_NOTE_LIST, MSG_NOTE_READ, MSG_NOTE_WRITE,
-    MSG_NOTE_REPLY, MSG_ERROR,
+    MSG_NOTE_REPLY, MSG_NOTE_DELETE, MSG_ERROR,
+)
+from client.ui import (
+    exibir_banner,
+    exibir_menu_principal,
+    exibir_ajuda,
+    perguntar_usuario,
+    perguntar_senha,
+    perguntar_conteudo,
+    mostrar_status,
+    mostrar_erro,
+    mostrar_resultado,
 )
 
 
@@ -103,7 +112,7 @@ class ClienteKerberos:
 
     def executar_passo1(self):
         """Envia MSG_AUTH_REQUEST ao AS, recebe salt + TGT + K_c_AS."""
-        self.usuario = input("Usuario: ").strip()
+        self.usuario = perguntar_usuario()
         self._conectar(AS_HOST, AS_PORT)
         self.socket.sendall(
             empacotar(MSG_AUTH_REQUEST, self.usuario.encode())
@@ -127,10 +136,10 @@ class ClienteKerberos:
         tam_k = struct.unpack(">I", payload[offset:offset + 4])[0]
         k_as_cifrada = payload[offset + 4:offset + 4 + tam_k]
 
-        senha = getpass.getpass("Senha: ")
+        senha = perguntar_senha()
         k_c = derivar_chave(senha.encode(), salt)
         self.k_c_as = decifrar_aes_gcm(k_c, k_as_cifrada)
-        print("[OK] Autenticado no AS.")
+        mostrar_status("Autenticado no AS.")
 
     # --- PASSO 2: TGS (Ticket Granting Server) ---
 
@@ -162,7 +171,7 @@ class ClienteKerberos:
         ks_cifrada = payload[offset + 4:offset + 4 + tam_ks]
 
         self.k_c_svc = decifrar_aes_gcm(self.k_c_as, ks_cifrada)
-        print("[OK] Ticket de servico obtido.")
+        mostrar_status("Ticket de servico obtido.")
 
     # --- LOOP DE NOTAS ---
 
@@ -175,13 +184,7 @@ class ClienteKerberos:
 
         O ticket e reutilizado entre comandos — Single Sign-On.
         """
-        print()
-        print("Comandos:")
-        print("  /notas                — listar suas notas")
-        print("  /ler <arquivo>        — ler uma nota")
-        print("  /escrever <arquivo>   — criar ou sobrescrever nota")
-        print("  /sair                 — encerrar")
-        print()
+        exibir_ajuda()
 
         while True:
             try:
@@ -193,7 +196,7 @@ class ClienteKerberos:
 
                 comando = self._parsear_comando(linha)
                 if comando is None:
-                    print("Comando desconhecido. Use /notas, /ler ou /escrever.")
+                    mostrar_erro("Comando desconhecido. Use /notas, /ler ou /escrever.")
                     continue
 
                 cmd_tipo, cmd_payload = comando
@@ -207,18 +210,18 @@ class ClienteKerberos:
 
                 tipo, payload = self._receber_msg()
                 if tipo is None:
-                    print("[ERRO] Conexao perdida com o servico.")
+                    mostrar_erro("Conexao perdida com o servico.")
                     self.fechar()
                     continue
 
                 if tipo == MSG_ERROR:
                     msg = payload.decode() if payload else "Falha na autenticacao."
-                    print(f"[ERRO] {msg}")
+                    mostrar_erro(msg)
                     self.fechar()
                     continue
 
                 if tipo != MSG_SVC_REPLY:
-                    print(f"[ERRO] Resposta inesperada do servico (tipo={tipo}).")
+                    mostrar_erro(f"Resposta inesperada do servico (tipo={tipo}).")
                     self.fechar()
                     continue
 
@@ -227,12 +230,12 @@ class ClienteKerberos:
                     resp = decifrar_aes_gcm(self.k_c_svc, payload)
                     ts_resp = struct.unpack(">Q", resp)[0]
                 except InvalidTag:
-                    print("[ERRO] Falha ao decifrar resposta de autenticacao mutua.")
+                    mostrar_erro("Falha ao decifrar resposta de autenticacao mutua.")
                     self.fechar()
                     continue
 
                 if ts_resp != ts_auth + 1:
-                    print("[ERRO] Falha na autenticacao mutua (timestamp incorreto).")
+                    mostrar_erro("Falha na autenticacao mutua (timestamp incorreto).")
                     self.fechar()
                     continue
 
@@ -241,11 +244,11 @@ class ClienteKerberos:
                 tipo_resp, payload_resp = self._receber_msg()
 
                 if tipo_resp == MSG_NOTE_REPLY:
-                    print(payload_resp.decode())
+                    mostrar_resultado(payload_resp.decode())
                 elif tipo_resp == MSG_ERROR:
-                    print(f"[ERRO] {payload_resp.decode()}")
+                    mostrar_erro(payload_resp.decode())
                 else:
-                    print(f"[ERRO] Resposta inesperada (tipo={tipo_resp}).")
+                    mostrar_erro(f"Resposta inesperada (tipo={tipo_resp}).")
 
                 self.fechar()
 
@@ -253,7 +256,7 @@ class ClienteKerberos:
                 print()
                 break
             except Exception as e:
-                print(f"[ERRO] {e}")
+                mostrar_erro(str(e))
                 self.fechar()
                 continue
 
@@ -272,20 +275,27 @@ class ClienteKerberos:
         if linha == "/notas":
             return MSG_NOTE_LIST, b""
 
-        if linha.startswith("/ler "):
-            nome = linha[5:].strip()
+        if linha.startswith("/ler"):
+            nome = linha[4:].strip()
             if not nome:
-                print("Uso: /ler <arquivo>")
+                mostrar_erro("Uso: /ler <arquivo>")
                 return None
             return MSG_NOTE_READ, nome.encode()
 
-        if linha.startswith("/escrever "):
-            nome = linha[10:].strip()
+        if linha.startswith("/escrever"):
+            nome = linha[9:].strip()
             if not nome:
-                print("Uso: /escrever <arquivo>")
+                mostrar_erro("Uso: /escrever <arquivo>")
                 return None
-            conteudo = input("Conteudo: ")
+            conteudo = perguntar_conteudo()
             return MSG_NOTE_WRITE, (nome + "\n" + conteudo).encode()
+
+        if linha.startswith("/deletar"):
+            nome = linha[8:].strip()
+            if not nome:
+                mostrar_erro("Uso: /deletar <arquivo>")
+                return None
+            return MSG_NOTE_DELETE, nome.encode()
 
         return None
 
@@ -326,16 +336,16 @@ def _cadastrar_usuario():
     banco = UserDB(USER_DB_PATH)
 
     print("\n### Cadastrar usuario ###")
-    nome = input("Usuario: ").strip()
-    senha = getpass.getpass("Senha: ")
+    nome = perguntar_usuario()
+    senha = perguntar_senha()
 
     if banco.buscar(nome) is not None:
-        print(f"Usuario '{nome}' ja existe.")
+        mostrar_erro(f"Usuario '{nome}' ja existe.")
     else:
         salt = urandom(TAMANHO_SALT)
         hash_chave = derivar_chave(senha.encode(), salt)
         banco.cadastrar(nome, salt, hash_chave)
-        print(f"Usuario '{nome}' cadastrado com sucesso!")
+        mostrar_status(f"Usuario '{nome}' cadastrado com sucesso!")
 
 
 def _login():
@@ -346,32 +356,25 @@ def _login():
         cliente.executar_passo2()
         cliente.loop_notas()
     except Exception as e:
-        print(f"\n[FALHA] {e}")
+        mostrar_erro(str(e))
         cliente.fechar()
 
 
 def main():
     """Ponto de entrada do cliente Kerberos com menu de cadastro/login."""
     while True:
-        print("\n" + "=" * 40)
-        print("  KERBEROS NOTAS — Cliente")
-        print("=" * 40)
-        print("  1. Cadastrar usuario")
-        print("  2. Fazer login")
-        print("  0. Sair")
-        print()
-
-        opcao = input("Opcao: ").strip()
+        exibir_banner()
+        opcao = exibir_menu_principal()
 
         if opcao == "1":
             _cadastrar_usuario()
         elif opcao == "2":
             _login()
         elif opcao == "0":
-            print("Ate logo!")
+            mostrar_status("Ate logo!")
             break
         else:
-            print("Opcao invalida.")
+            mostrar_erro("Opcao invalida.")
 
 
 if __name__ == "__main__":

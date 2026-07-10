@@ -23,6 +23,7 @@ from tgs_server.message import (
     MSG_NOTE_READ,
     MSG_NOTE_WRITE,
     MSG_NOTE_REPLY,
+    MSG_NOTE_DELETE,
     # Funcoes de empacotamento
     empacotar,
     desempacotar,
@@ -45,6 +46,7 @@ __all__ = [
     "MSG_NOTE_READ",
     "MSG_NOTE_WRITE",
     "MSG_NOTE_REPLY",
+    "MSG_NOTE_DELETE",
     "empacotar",
     "desempacotar",
     "criar_ticket",
