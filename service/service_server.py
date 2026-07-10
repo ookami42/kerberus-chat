@@ -16,7 +16,7 @@ import struct
 import threading
 import time
 
-from common.config import SVC_HOST, SVC_PORT, JANELA_AUTH
+from common.config import SVC_HOST, SVC_PORT, SVC_MASTER_KEY_PATH, JANELA_AUTH
 from common.crypto import decifrar_aes_gcm, cifrar_aes_gcm
 from common.protocol import (
     empacotar, extrair_ticket,
@@ -45,7 +45,7 @@ class ServicoKerberos:
 
     def _carregar_chave(self):
         """Carrega a chave mestra do servico."""
-        caminho = "keys/service_master.key"
+        caminho = SVC_MASTER_KEY_PATH
         if not os.path.exists(caminho):
             raise FileNotFoundError(
                 f"Chave mestra do servico nao encontrada em {caminho}"
