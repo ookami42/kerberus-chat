@@ -16,6 +16,8 @@ import struct
 import threading
 import time
 
+from cryptography.exceptions import InvalidTag
+
 from common.config import SVC_HOST, SVC_PORT, SVC_MASTER_KEY_PATH, JANELA_AUTH
 from common.crypto import decifrar_aes_gcm, cifrar_aes_gcm
 from common.protocol import (
@@ -212,6 +214,11 @@ class ServicoKerberos:
             )
             nome_tk, k_c_svc, ts_tk, life_tk = extrair_ticket(st_decifrado)
 
+            # 2b. Validar expiracao do Service Ticket
+            agora = int(time.time())
+            if agora > ts_tk + life_tk * 60:
+                raise PermissionError("Service Ticket expirado.")
+
             # 3. Validar Authenticator
             auth_decifrado = decifrar_aes_gcm(k_c_svc, auth_cifrado)
 
@@ -249,6 +256,12 @@ class ServicoKerberos:
             # 6. Loop de relay
             self._loop_relay(con, nome_tk)
 
+        except InvalidTag:
+            print(f"[SERVICO] Falha de autenticacao ({addr}): InvalidTag")
+            try:
+                con.sendall(empacotar(MSG_ERROR, b"Ticket ou authenticator invalido"))
+            except OSError:
+                pass
         except Exception as e:
             print(f"[SERVICO] Erro ({addr}): {e}")
             try:
