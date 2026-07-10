@@ -177,7 +177,9 @@ class ASServer:
             if header is None:
                 return
 
-            tipo, tamanho = desempacotar(header)
+            # Extrai o tipo e o tamanho do payload diretamente do cabeçalho.
+            # Evita usar desempacotar(), que retorna (tipo, payload) para mensagens completas.
+            tipo, tamanho = struct.unpack(">HI", header)
             if tipo != MSG_AUTH_REQUEST:
                 self._enviar_erro(con)
                 return
