@@ -8,12 +8,14 @@ version = "0.1.0"
 dependencies = ["cryptography", "pytest"]
 
 [project.scripts]
-cadastrar-usuario = "scripts.cadastrar_usuario:main"
-gerar-chaves       = "scripts.gerar_chaves:main"
-as-server          = "as_server.as_server:main"
-tgs-server         = "tgs_server.tgs_server:main"
-service-server     = "service.service_server:main"
-kerberos-client    = "client.client:main"
+cadastrar-usuario  = "scripts.cadastrar_usuario:main"
+gerar-chaves        = "scripts.gerar_chaves:main"
+as-server           = "as_server.as_server:main"
+tgs-server          = "tgs_server.tgs_server:main"
+service-server      = "service.service_server:main"
+kerberos-client     = "client.client:main"
+kerberos-servidor   = "scripts.kerberos_demo:main"
+kerberos-cliente    = "client.client:main"
 
 [tool.setuptools.packages.find]
 include = ["common*", "as_server*", "tgs_server*", "service*", "client*", "scripts*"]
