@@ -98,7 +98,7 @@ service-server
 ### 4. Executar o cliente
 
 ```bash
-kerberos-client
+kerberos-cliente
 ```
 
 ---
@@ -138,7 +138,7 @@ kerberos-chat/
 │   ├── __init__.py
 │   ├── gerar_chaves.py             # Gera as chaves mestras
 │   ├── cadastrar_usuario.py        # Adiciona usuário ao JSON
-│   └── testar_ataque.py            # Simula ataques (stub)
+│   └── simular_ataque.py            # Simula ataques (4 cenários)
 │
 ├── tests/                          ← Testes unitários (pytest)
 │   ├── test_cadastrar_usuario.py

@@ -16,7 +16,6 @@ from common.config import (
 from common.crypto import decifrar_aes_gcm, cifrar_aes_gcm
 from common.protocol import (
     empacotar,
-    desempacotar,
     MSG_TGS_REQUEST,
     MSG_TGS_REPLY,
     MSG_ERROR,
