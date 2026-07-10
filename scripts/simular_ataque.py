@@ -10,7 +10,7 @@ Cenários:
   4. Usuário inexistente           — tenta autenticar com nome não cadastrado
 
 Uso:
-  python scripts/testar_ataque.py
+  python scripts/simular_ataque.py
 
 Requer que os servidores (AS, TGS, Serviço) estejam rodando.
 """
@@ -30,8 +30,8 @@ from common.config import (
 )
 from common.crypto import cifrar_aes_gcm, decifrar_aes_gcm
 from common.protocol import (
-    empacotar, desempacotar,
-    criar_ticket, extrair_ticket,
+    empacotar,
+    criar_ticket,
     MSG_AUTH_REQUEST, MSG_AUTH_REPLY,
     MSG_TGS_REQUEST, MSG_TGS_REPLY,
     MSG_SVC_REQUEST, MSG_SVC_REPLY,
@@ -52,19 +52,24 @@ def _conectar(host: str, porta: int) -> socket.socket:
     return sock
 
 
-def _receber_resposta(sock: socket.socket) -> tuple[int, bytes]:
+def _receber_resposta(sock: socket.socket) -> "tuple[int | None, bytes | None]":
     """Lê cabeçalho (6 bytes) + payload de uma mensagem do socket.
+
+    Usa struct.unpack diretamente no cabeçalho (não desempacotar, que
+    espera a mensagem completa com payload).
 
     Returns:
         Tupla (tipo, payload).
-        Retorna (None, None) se a conexão for fechada.
+        Retorna (None, None) se a conexão for fechada ou der timeout.
     """
     try:
         header = sock.recv(6)
         if not header:
             return None, None
-        tipo, tamanho = desempacotar(header)
-        payload = sock.recv(tamanho)
+        # Desempacota manualmente: 2 bytes tipo (H) + 4 bytes tamanho (I)
+        tipo, tamanho = struct.unpack(">HI", header)
+        # Lê o payload com o tamanho extraído do cabeçalho
+        payload = sock.recv(tamanho) if tamanho > 0 else b""
         return tipo, payload
     except (socket.timeout, ConnectionError):
         return None, None
@@ -99,7 +104,7 @@ def _carregar_chave(caminho: str, nome: str) -> bytes:
 
 # ─── Cenário 1: Replay de TGT expirado ─────────────────────────────────
 
-def teste_replay_tgt(as_master_key: bytes) -> bool:
+def teste_replay_tgt(as_master_key: bytes) -> "bool | None":
     """Tenta reenviar um TGT já expirado para o TGS.
 
     Estratégia:
@@ -179,7 +184,7 @@ def teste_replay_tgt(as_master_key: bytes) -> bool:
 
 # ─── Cenário 2: Replay de authenticator ────────────────────────────────
 
-def teste_replay_authenticator(service_master_key: bytes) -> bool:
+def teste_replay_authenticator(service_master_key: bytes) -> "bool | None":
     """Tenta enviar um authenticator com timestamp muito antigo ao Serviço.
 
     Estratégia:
@@ -268,7 +273,7 @@ def teste_replay_authenticator(service_master_key: bytes) -> bool:
 
 # ─── Cenário 3: Ticket com chave errada ────────────────────────────────
 
-def teste_ticket_chave_errada() -> bool:
+def teste_ticket_chave_errada() -> "bool | None":
     """Tenta enviar um Service Ticket cifrado com uma chave que o
     Serviço não conhece.
 
@@ -355,7 +360,7 @@ def teste_ticket_chave_errada() -> bool:
 
 # ─── Cenário 4: Usuário inexistente ────────────────────────────────────
 
-def teste_usuario_inexistente() -> bool:
+def teste_usuario_inexistente() -> "bool | None":
     """Tenta autenticar com um nome de usuário que não está cadastrado
     no UserDB.
 
