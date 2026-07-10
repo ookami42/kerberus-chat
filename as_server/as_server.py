@@ -138,7 +138,8 @@ class ASServer:
         """
         if isinstance(usuario, dict):
             hash_usuario = (
-                usuario.get("hash")
+                usuario.get("hash_chave")
+                or usuario.get("hash")
                 or usuario.get("password_hash")
                 or usuario.get("senha_hash")
                 or b""
@@ -215,7 +216,7 @@ class ASServer:
             K_c_AS = os.urandom(16)
 
             # Monta o TGT
-            timestamp = time.time()
+            timestamp = int(time.time())
             validade = 3600
             ticket = criar_ticket(
                 usuario=nome_usuario,

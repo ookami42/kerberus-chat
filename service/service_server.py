@@ -15,7 +15,7 @@ from common.config import SVC_HOST, SVC_PORT, JANELA_AUTH
 from common.crypto import decifrar_aes_gcm, cifrar_aes_gcm
 from common.protocol import (
     desempacotar, empacotar, extrair_ticket,
-    MSG_SVC_REQUEST, MSG_SVC_REPLY, MSG_ERROR
+    MSG_SVC_REQUEST, MSG_SVC_REPLY, MSG_CHAT, MSG_ECHO, MSG_ERROR
 )
 
 class ServicoKerberos:
@@ -65,6 +65,48 @@ class ServicoKerberos:
             dados += chunk
         return dados
 
+    def _loop_chat(self, con, nome_usuario, k_c_svc):
+        """Loop de eco do chat após autenticação mútua (Issue #26).
+
+        Recebe mensagens MSG_CHAT do cliente e responde com MSG_ECHO.
+        O chat é em texto claro por decisão didática — o foco do projeto
+        é o protocolo Kerberos, não a confidencialidade das mensagens.
+
+        Args:
+            con: Socket conectado ao cliente.
+            nome_usuario: Nome do usuário autenticado (bytes).
+            k_c_svc: Chave de sessão cliente-serviço (não usada no chat,
+                     mantida para compatibilidade com futura extensão).
+        """
+        print(f"[SERVIÇO] Chat iniciado com {nome_usuario.decode()}.")
+        while True:
+            # Lê o cabeçalho de 6 bytes: tipo (2B) + tamanho (4B)
+            header = self._recv_exato(con, 6)
+            if not header:
+                print(f"[SERVIÇO] Cliente {nome_usuario.decode()} desconectou.")
+                break
+
+            tipo, tamanho = desempacotar(header)
+
+            # Lê o payload da mensagem
+            payload = self._recv_exato(con, tamanho)
+            if not payload:
+                print(f"[SERVIÇO] Conexão perdida com {nome_usuario.decode()}.")
+                break
+
+            if tipo == MSG_CHAT:
+                # Chat em texto claro — foco didático no Kerberos
+                texto = payload.decode("utf-8", errors="replace")
+                print(f"[SERVIÇO] {nome_usuario.decode()}: {texto}")
+
+                # Ecoa a mensagem de volta com prefixo "eco: "
+                resposta = f"eco: {texto}".encode("utf-8")
+                con.sendall(empacotar(MSG_ECHO, resposta))
+            else:
+                # Tipo inesperado — encerra o chat
+                print(f"[SERVIÇO] Tipo inesperado {tipo}, encerrando chat.")
+                break
+
     def atender_cliente(self, con, addr):
         """Handler principal (Issues #22 a #25)."""
         try:
@@ -112,8 +154,10 @@ class ServicoKerberos:
             resp_cifrada = cifrar_aes_gcm(k_c_svc, struct.pack(">Q", ts_auth + 1))
             con.sendall(empacotar(MSG_SVC_REPLY, resp_cifrada))
 
-            # Aqui entraríamos no loop de chat futuramente (#26)
-            print(f"[SERVIÇO] Canal seguro estabelecido com {nome_tk.decode()}.")
+            # 5. Loop de chat (Issue #26)
+            # O chat é mantido em texto claro por decisão didática —
+            # o foco do projeto é o protocolo Kerberos.
+            self._loop_chat(con, nome_tk, k_c_svc)
 
         except Exception as e:
             print(f"[SERVIÇO] Erro: {e}")

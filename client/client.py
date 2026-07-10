@@ -16,7 +16,7 @@ from common.protocol import (
     MSG_AUTH_REQUEST, MSG_AUTH_REPLY,
     MSG_TGS_REQUEST, MSG_TGS_REPLY,
     MSG_SVC_REQUEST, MSG_SVC_REPLY,
-    MSG_ERROR
+    MSG_CHAT, MSG_ECHO, MSG_ERROR
 )
 
 class ClienteKerberos:
