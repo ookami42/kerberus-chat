@@ -57,14 +57,34 @@ class ClienteKerberos:
         Usa struct.unpack direto no cabecalho, nao desempacotar().
         """
         try:
-            header = self.socket.recv(6)
-            if not header:
+            header = self._receber_exato(6)
+            if header is None:
                 return None, None
             tipo, tamanho = struct.unpack(">HI", header)
-            payload = self.socket.recv(tamanho)
+            payload = self._receber_exato(tamanho)
+            if payload is None:
+                return None, None
             return tipo, payload
         except (ConnectionError, OSError):
             return None, None
+
+    def _receber_exato(self, n):
+        """Le exatamente n bytes do socket, bloqueando ate completar.
+
+        Retorna None se a conexao for fechada antes de completar.
+        """
+        partes = []
+        recebido = 0
+        while recebido < n:
+            try:
+                chunk = self.socket.recv(n - recebido)
+            except (ConnectionError, OSError):
+                return None
+            if not chunk:
+                return None
+            partes.append(chunk)
+            recebido += len(chunk)
+        return b"".join(partes)
 
     def _imprimir(self, texto):
         """Print thread-safe: garante que duas threads nao misturem
@@ -94,6 +114,9 @@ class ClienteKerberos:
 
         tipo, payload = self._receber_msg()
         self.fechar()
+
+        if tipo is None:
+            raise Exception("Erro no AS: conexao perdida.")
 
         if tipo == MSG_ERROR:
             raise Exception(f"Erro no AS: {payload.decode()}")
@@ -127,6 +150,9 @@ class ClienteKerberos:
         self.socket.sendall(empacotar(MSG_TGS_REQUEST, payload))
         tipo, payload = self._receber_msg()
         self.fechar()
+
+        if tipo is None:
+            raise Exception("Erro no TGS: conexao perdida.")
 
         if tipo == MSG_ERROR:
             raise Exception(f"Erro no TGS: {payload.decode()}")
@@ -166,6 +192,10 @@ class ClienteKerberos:
 
         self.socket.sendall(empacotar(MSG_SVC_REQUEST, payload))
         tipo, payload = self._receber_msg()
+
+        if tipo is None:
+            self.fechar()
+            raise Exception("Erro no Servico: conexao perdida.")
 
         if tipo == MSG_ERROR:
             raise Exception(f"Erro no Servico: {payload.decode()}")
