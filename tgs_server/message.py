@@ -8,10 +8,15 @@ MSG_TGS_REQUEST = 3   # Cliente → TGS
 MSG_TGS_REPLY = 4     # TGS → Cliente
 MSG_SVC_REQUEST = 5   # Cliente → Serviço
 MSG_SVC_REPLY = 6     # Serviço → Cliente
-MSG_CHAT = 7          # Cliente → Serviço (dados do chat)
-MSG_ECHO = 8          # Serviço → Cliente (eco da mensagem)
+MSG_CHAT = 7          # (legado — chat removido)
+MSG_ECHO = 8          # (legado — chat removido)
 MSG_ERROR = 9         # Qualquer direção
-MSG_RELAY = 10        # Serviço → Cliente (mensagem encaminhada de outro usuário)
+
+# Tipos de mensagem do serviço de notas
+MSG_NOTE_LIST  = 10   # Cliente → Serviço: listar notas
+MSG_NOTE_READ  = 11   # Cliente → Serviço: ler uma nota
+MSG_NOTE_WRITE = 12   # Cliente → Serviço: criar ou sobrescrever nota
+MSG_NOTE_REPLY = 13   # Serviço → Cliente: resposta
 
 _HEADER_FORMAT = ">HI"  # unsigned short (tipo) + unsigned int (tamanho), big-endian
 _HEADER_SIZE = struct.calcsize(_HEADER_FORMAT)  # 6

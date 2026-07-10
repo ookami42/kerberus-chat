@@ -8,6 +8,7 @@ Cenários:
   2. Replay de authenticator       — envia authenticator com timestamp antigo
   3. Ticket com chave errada       — envia Service Ticket cifrado com chave inválida
   4. Usuário inexistente           — tenta autenticar com nome não cadastrado
+  5. Path traversal                — tenta ler nota de outro usuário com ../
 
 Uso:
   python scripts/simular_ataque.py
@@ -16,6 +17,7 @@ Requer que os servidores (AS, TGS, Serviço) estejam rodando.
 """
 
 import os
+import shutil
 import socket
 import struct
 import time
@@ -26,7 +28,7 @@ from common.config import (
     TGS_HOST, TGS_PORT,
     SVC_HOST, SVC_PORT,
     JANELA_AUTH, LIFETIME_TICKET, TAMANHO_CHAVE,
-    AS_MASTER_KEY_PATH, SVC_MASTER_KEY_PATH,
+    AS_MASTER_KEY_PATH, SVC_MASTER_KEY_PATH, NOTAS_RAIZ_PATH,
 )
 from common.crypto import cifrar_aes_gcm, decifrar_aes_gcm
 from common.protocol import (
@@ -36,6 +38,7 @@ from common.protocol import (
     MSG_TGS_REQUEST, MSG_TGS_REPLY,
     MSG_SVC_REQUEST, MSG_SVC_REPLY,
     MSG_ERROR,
+    MSG_NOTE_READ, MSG_NOTE_REPLY,
 )
 
 # ─── Utilitários de conexão ────────────────────────────────────────────
@@ -148,7 +151,7 @@ def teste_replay_tgt(as_master_key: bytes) -> "bool | None":
 
     # Passo 2: Montar a MSG_TGS_REQUEST
     # Formato: [4 bytes tam_tgt][TGT] + [4 bytes tam_svc][nome_svc]
-    nome_servico = b"chat"
+    nome_servico = b"notas"
     payload = (
         struct.pack(">I", len(tgt_cifrado))
         + tgt_cifrado
@@ -412,6 +415,137 @@ def teste_usuario_inexistente() -> "bool | None":
         return False
 
 
+# ─── Cenário 5: Path traversal no serviço de notas ───────────────────
+
+def teste_path_traversal(service_master_key: bytes) -> "bool | None":
+    """Tenta acessar notas de outro usuário injetando ../ no nome do arquivo.
+
+    Estratégia:
+      - Cria um Service Ticket válido para 'alice'.
+      - Prepara um arquivo secreto em /notas/bob/segredo.txt.
+      - Realiza o handshake Kerberos completo (autenticação mútua).
+      - Envia MSG_NOTE_READ com payload '../bob/segredo.txt'.
+      - Espera receber MSG_ERROR (o servidor resolve para
+        /notas/alice/segredo.txt, que não existe).
+
+    O que está sendo testado:
+      O isolamento entre usuários no serviço de notas. Mesmo que o
+      atacante tenha um ticket válido, ele não consegue escapar do
+      próprio diretório de notas graças a os.path.basename().
+      Se o path traversal furasse, receberia MSG_NOTE_REPLY com o
+      conteúdo do arquivo secreto do Bob.
+
+    Returns:
+        True se o ataque foi BLOQUEADO.
+        False se o ataque foi ACEITO (o conteúdo do Bob foi exposto).
+    """
+    print("\n" + "=" * 60)
+    print("[TESTE 5] Path traversal no serviço de notas")
+    print("=" * 60)
+    print("Objetivo: usar '../' no nome do arquivo para ler notas de")
+    print("          outro usuário, e verificar se o serviço bloqueia.\n")
+
+    # --- Setup: criar arquivo secreto para o Bob ---
+    bob_dir = os.path.join(NOTAS_RAIZ_PATH, "bob")
+    bob_arquivo = os.path.join(bob_dir, "segredo.txt")
+    conteudo_secreto = "senha do bob: admin123"
+    teste_executado = False
+
+    try:
+        os.makedirs(bob_dir, exist_ok=True)
+        with open(bob_arquivo, "w") as f:
+            f.write(conteudo_secreto)
+        print(f"  -> Arquivo secreto criado: {bob_arquivo}")
+        print(f"     Conteúdo: '{conteudo_secreto}'")
+
+        # --- Passo 1: Criar Service Ticket válido para Alice ---
+        nome = b"alice"
+        k_c_svc = os.urandom(TAMANHO_CHAVE)
+        timestamp_atual = int(time.time())
+
+        print(f"\n  -> Criando Service Ticket válido para '{nome.decode()}'")
+
+        st = criar_ticket(nome, k_c_svc, timestamp_atual, LIFETIME_TICKET)
+        st_cifrado = cifrar_aes_gcm(service_master_key, st)
+
+        # --- Passo 2: Authenticator com timestamp válido ---
+        auth = (
+            struct.pack(">H", len(nome))
+            + nome
+            + struct.pack(">Q", timestamp_atual)
+        )
+        auth_cifrado = cifrar_aes_gcm(k_c_svc, auth)
+
+        # --- Passo 3: Montar MSG_SVC_REQUEST ---
+        payload = (
+            struct.pack(">I", len(st_cifrado))
+            + st_cifrado
+            + struct.pack(">I", len(auth_cifrado))
+            + auth_cifrado
+        )
+
+        try:
+            sock = _conectar(SVC_HOST, SVC_PORT)
+        except (ConnectionRefusedError, socket.timeout) as e:
+            print(f"\n  ⚠️  Serviço offline ({e}). Pulando teste.")
+            return None
+
+        # --- Passo 4: Handshake Kerberos ---
+        print(f"  -> Enviando MSG_SVC_REQUEST ao Serviço ({SVC_HOST}:{SVC_PORT})...")
+        sock.sendall(empacotar(MSG_SVC_REQUEST, payload))
+
+        # Ler MSG_SVC_REPLY (autenticação mútua — não precisamos validar)
+        tipo_auth, payload_auth = _receber_resposta(sock)
+        if tipo_auth != MSG_SVC_REPLY:
+            print(f"  ❌ Autenticação falhou (tipo={tipo_auth}).")
+            sock.close()
+            return None
+
+        print("  -> Autenticação mútua OK. Enviando ataque de path traversal...")
+
+        # --- Passo 5: Enviar MSG_NOTE_READ com path traversal ---
+        payload_traversal = b"../bob/segredo.txt"
+        print(f"     Payload: MSG_NOTE_READ com '{payload_traversal.decode()}'")
+        print(f"     (Servidor deveria resolver para notas/alice/segredo.txt,")
+        print(f"      não para notas/bob/segredo.txt)")
+
+        sock.sendall(empacotar(MSG_NOTE_READ, payload_traversal))
+
+        # --- Passo 6: Verificar resposta ---
+        tipo, resposta = _receber_resposta(sock)
+        sock.close()
+        teste_executado = True
+
+        if tipo == MSG_NOTE_REPLY:
+            conteudo = resposta.decode(errors="replace")
+            print(f"\n  ❌ CRÍTICO! Path traversal FUNCIONOU!")
+            print(f"     O servidor retornou o conteúdo do arquivo do Bob:")
+            print(f"     '{conteudo}'")
+            print(f"     (Esperado: MSG_ERROR com 'Nota nao encontrada.')")
+            return False
+
+        elif tipo == MSG_ERROR:
+            print(f"  ✅ BLOQUEADO! Serviço rejeitou o path traversal.")
+            print(f"     Mensagem de erro: {resposta.decode()}")
+            print(f"     O servidor resolveu para o diretório de Alice,")
+            print(f"     não para o diretório secreto do Bob.")
+            return True
+
+        else:
+            print(f"  ❌ FALHA! Resposta inesperada (tipo={tipo}).")
+            return False
+
+    finally:
+        # --- Teardown: remover arquivo secreto do Bob ---
+        if os.path.exists(bob_arquivo):
+            os.remove(bob_arquivo)
+        if os.path.isdir(bob_dir):
+            try:
+                os.rmdir(bob_dir)
+            except OSError:
+                pass
+
+
 # ─── Função principal ──────────────────────────────────────────────────
 
 def main():
@@ -427,10 +561,10 @@ def main():
     keys/service_master.key.
     """
     print("=" * 60)
-    print("  SCRIPTS DE TESTE DE ATAQUE — Kerberos Chat")
+    print("  SCRIPTS DE TESTE DE ATAQUE — Kerberos Notas")
     print("=" * 60)
     print()
-    print("Este script tenta 4 ataques contra o sistema Kerberos")
+    print("Este script tenta 5 ataques contra o sistema Kerberos")
     print("para demonstrar que as proteções funcionam.\n")
     print("Requer: AS (porta 5450), TGS (5451) e Serviço (5452) rodando.\n")
 
@@ -467,6 +601,10 @@ def main():
     # Teste 4: Usuário inexistente (precisa apenas do AS)
     r4 = teste_usuario_inexistente()
     resultados.append(("Usuário inexistente", r4))
+
+    # Teste 5: Path traversal no serviço de notas (precisa do Serviço + service_master_key)
+    r5 = teste_path_traversal(service_master_key)
+    resultados.append(("Path traversal (notas)", r5))
 
     # ─── Resumo final ──────────────────────────────────────────────
     print("\n" + "=" * 60)

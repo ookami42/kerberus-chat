@@ -1,19 +1,23 @@
-"""Cliente Kerberos: orquestra o fluxo AS -> TGS -> Servico -> Chat.
+"""Cliente Kerberos: orquestra o fluxo AS -> TGS -> Servico de Notas.
 
-Executa os 3 passos do protocolo, realiza autenticacao mutua e entra
-no chat relay. Uma thread separada escuta mensagens recebidas de
-outros usuarios enquanto o loop principal le o teclado.
+Executa os passos 1 e 2 do protocolo (AS e TGS) para obter um
+Service Ticket. Em seguida, entra no loop de comandos de notas,
+onde cada comando abre uma nova conexao TCP e reutiliza o ticket.
 
-Formato de envio: "destinatario mensagem"
-  Exemplo: "bob Ola, tudo bem?"
+Formatos de comando:
+  /notas              — listar notas
+  /ler <arquivo>      — ler uma nota
+  /escrever <arquivo> — criar ou sobrescrever nota
+  /sair               — encerrar
 """
 
 import getpass
 import socket
 import struct
 import sys
-import threading
 import time
+
+from cryptography.exceptions import InvalidTag
 
 from common.config import AS_HOST, AS_PORT, TGS_HOST, TGS_PORT, SVC_HOST, SVC_PORT
 from common.crypto import derivar_chave, decifrar_aes_gcm, cifrar_aes_gcm
@@ -22,12 +26,13 @@ from common.protocol import (
     MSG_AUTH_REQUEST, MSG_AUTH_REPLY,
     MSG_TGS_REQUEST, MSG_TGS_REPLY,
     MSG_SVC_REQUEST, MSG_SVC_REPLY,
-    MSG_CHAT, MSG_RELAY, MSG_ERROR,
+    MSG_NOTE_LIST, MSG_NOTE_READ, MSG_NOTE_WRITE,
+    MSG_NOTE_REPLY, MSG_ERROR,
 )
 
 
 class ClienteKerberos:
-    """Cliente do protocolo Kerberos com chat relay."""
+    """Cliente do protocolo Kerberos com servico de notas."""
 
     def __init__(self):
         self.usuario = None
@@ -35,13 +40,7 @@ class ClienteKerberos:
         self.k_c_svc = None     # Chave de sessao Cliente-Servico
         self.tgt_cifrado = None
         self.st_cifrado = None
-        self.ts_original = 0
         self.socket = None
-        self._conectado = False
-
-        # Lock para evitar que as duas threads escrevam no terminal
-        # ao mesmo tempo (thread principal + thread de escuta)
-        self._print_lock = threading.Lock()
 
     # --- UTILITARIOS ---
 
@@ -53,8 +52,9 @@ class ClienteKerberos:
     def _receber_msg(self):
         """Le uma mensagem completa do socket.
 
-        Retorna (tipo, payload) ou (None, None) se a conexao cair.
-        Usa struct.unpack direto no cabecalho, nao desempacotar().
+        Returns:
+            tuple[int | None, bytes | None]: (tipo, payload) ou (None, None)
+            se a conexao cair.
         """
         try:
             header = self._receber_exato(6)
@@ -69,9 +69,13 @@ class ClienteKerberos:
             return None, None
 
     def _receber_exato(self, n):
-        """Le exatamente n bytes do socket, bloqueando ate completar.
+        """Le exatamente n bytes do socket.
 
-        Retorna None se a conexao for fechada antes de completar.
+        Args:
+            n: Numero de bytes a ler.
+
+        Returns:
+            bytes | None: Bytes lidos ou None se a conexao for fechada.
         """
         partes = []
         recebido = 0
@@ -86,15 +90,8 @@ class ClienteKerberos:
             recebido += len(chunk)
         return b"".join(partes)
 
-    def _imprimir(self, texto):
-        """Print thread-safe: garante que duas threads nao misturem
-        saida no terminal."""
-        with self._print_lock:
-            print(texto)
-
     def fechar(self):
-        """Fecha o socket e sinaliza desconexao."""
-        self._conectado = False
+        """Fecha o socket."""
         if self.socket:
             try:
                 self.socket.close()
@@ -133,7 +130,7 @@ class ClienteKerberos:
         senha = getpass.getpass("Senha: ")
         k_c = derivar_chave(senha.encode(), salt)
         self.k_c_as = decifrar_aes_gcm(k_c, k_as_cifrada)
-        self._imprimir("[OK] Autenticado no AS.")
+        print("[OK] Autenticado no AS.")
 
     # --- PASSO 2: TGS (Ticket Granting Server) ---
 
@@ -143,8 +140,8 @@ class ClienteKerberos:
         payload = (
             struct.pack(">I", len(self.tgt_cifrado))
             + self.tgt_cifrado
-            + struct.pack(">I", 4)
-            + b"chat"
+            + struct.pack(">I", 5)
+            + b"notas"
         )
 
         self.socket.sendall(empacotar(MSG_TGS_REQUEST, payload))
@@ -165,21 +162,147 @@ class ClienteKerberos:
         ks_cifrada = payload[offset + 4:offset + 4 + tam_ks]
 
         self.k_c_svc = decifrar_aes_gcm(self.k_c_as, ks_cifrada)
-        self._imprimir("[OK] Ticket de servico obtido.")
+        print("[OK] Ticket de servico obtido.")
 
-    # --- PASSO 3: SERVICO (Autenticacao Mutua) ---
+    # --- LOOP DE NOTAS ---
 
-    def executar_passo3(self):
-        """Envia MSG_SVC_REQUEST ao Servico, realiza autenticacao mutua."""
-        self._conectar(SVC_HOST, SVC_PORT)
-        self.ts_original = int(time.time())
+    def loop_notas(self):
+        """Loop de comandos do servico de notas.
 
-        # Authenticator: [2B len_nome][nome][8B timestamp]
+        Cada comando abre uma nova conexao TCP com o Servico,
+        realiza o handshake Kerberos completo (ticket + authenticator +
+        autenticacao mutua) e entao envia o comando de nota.
+
+        O ticket e reutilizado entre comandos — Single Sign-On.
+        """
+        print()
+        print("Comandos:")
+        print("  /notas                — listar suas notas")
+        print("  /ler <arquivo>        — ler uma nota")
+        print("  /escrever <arquivo>   — criar ou sobrescrever nota")
+        print("  /sair                 — encerrar")
+        print()
+
+        while True:
+            try:
+                linha = input("> ").strip()
+                if not linha:
+                    continue
+                if linha == "/sair":
+                    break
+
+                comando = self._parsear_comando(linha)
+                if comando is None:
+                    print("Comando desconhecido. Use /notas, /ler ou /escrever.")
+                    continue
+
+                cmd_tipo, cmd_payload = comando
+
+                # 1. Conectar ao Servico
+                self._conectar(SVC_HOST, SVC_PORT)
+
+                # 2. Handshake Kerberos
+                ts_auth = int(time.time())
+                self._enviar_svc_request(ts_auth)
+
+                tipo, payload = self._receber_msg()
+                if tipo is None:
+                    print("[ERRO] Conexao perdida com o servico.")
+                    self.fechar()
+                    continue
+
+                if tipo == MSG_ERROR:
+                    msg = payload.decode() if payload else "Falha na autenticacao."
+                    print(f"[ERRO] {msg}")
+                    self.fechar()
+                    continue
+
+                if tipo != MSG_SVC_REPLY:
+                    print(f"[ERRO] Resposta inesperada do servico (tipo={tipo}).")
+                    self.fechar()
+                    continue
+
+                # 3. Autenticacao mutua: verificar timestamp+1
+                try:
+                    resp = decifrar_aes_gcm(self.k_c_svc, payload)
+                    ts_resp = struct.unpack(">Q", resp)[0]
+                except InvalidTag:
+                    print("[ERRO] Falha ao decifrar resposta de autenticacao mutua.")
+                    self.fechar()
+                    continue
+
+                if ts_resp != ts_auth + 1:
+                    print("[ERRO] Falha na autenticacao mutua (timestamp incorreto).")
+                    self.fechar()
+                    continue
+
+                # 4. Enviar comando de nota
+                self.socket.sendall(empacotar(cmd_tipo, cmd_payload))
+                tipo_resp, payload_resp = self._receber_msg()
+
+                if tipo_resp == MSG_NOTE_REPLY:
+                    print(payload_resp.decode())
+                elif tipo_resp == MSG_ERROR:
+                    print(f"[ERRO] {payload_resp.decode()}")
+                else:
+                    print(f"[ERRO] Resposta inesperada (tipo={tipo_resp}).")
+
+                self.fechar()
+
+            except KeyboardInterrupt:
+                print()
+                break
+            except Exception as e:
+                print(f"[ERRO] {e}")
+                self.fechar()
+                continue
+
+        self.fechar()
+
+    def _parsear_comando(self, linha):
+        """Interpreta a linha digitada e retorna (tipo_msg, payload).
+
+        Args:
+            linha: Texto digitado pelo usuario.
+
+        Returns:
+            tuple[int, bytes] | None: (tipo_da_mensagem, payload) ou None
+            se o comando nao for reconhecido.
+        """
+        if linha == "/notas":
+            return MSG_NOTE_LIST, b""
+
+        if linha.startswith("/ler "):
+            nome = linha[5:].strip()
+            if not nome:
+                print("Uso: /ler <arquivo>")
+                return None
+            return MSG_NOTE_READ, nome.encode()
+
+        if linha.startswith("/escrever "):
+            nome = linha[10:].strip()
+            if not nome:
+                print("Uso: /escrever <arquivo>")
+                return None
+            conteudo = input("Conteudo: ")
+            return MSG_NOTE_WRITE, (nome + "\n" + conteudo).encode()
+
+        return None
+
+    def _enviar_svc_request(self, ts_auth):
+        """Monta e envia MSG_SVC_REQUEST com Service Ticket e Authenticator.
+
+        O Authenticator contem: [2 bytes len_nome][nome][8 bytes timestamp].
+        Ambos, ticket e authenticator, sao enviados com prefixo de 4 bytes.
+
+        Args:
+            ts_auth: Timestamp atual (int) usado no authenticator.
+        """
         nome_b = self.usuario.encode()
         auth = (
             struct.pack(">H", len(nome_b))
             + nome_b
-            + struct.pack(">Q", self.ts_original)
+            + struct.pack(">Q", ts_auth)
         )
         auth_cifrado = cifrar_aes_gcm(self.k_c_svc, auth)
 
@@ -191,100 +314,6 @@ class ClienteKerberos:
         )
 
         self.socket.sendall(empacotar(MSG_SVC_REQUEST, payload))
-        tipo, payload = self._receber_msg()
-
-        if tipo is None:
-            self.fechar()
-            raise Exception("Erro no Servico: conexao perdida.")
-
-        if tipo == MSG_ERROR:
-            raise Exception(f"Erro no Servico: {payload.decode()}")
-
-        resp_decifrada = decifrar_aes_gcm(self.k_c_svc, payload)
-        ts_resp = struct.unpack(">Q", resp_decifrada)[0]
-
-        if ts_resp == self.ts_original + 1:
-            self._imprimir("[OK] Autenticacao mutua concluida.")
-            self._imprimir("[OK] Conectado ao chat.")
-        else:
-            self.fechar()
-            raise Exception("Falha na autenticacao mutua!")
-
-    # --- THREAD DE ESCUTA ---
-
-    def _escutar(self):
-        """Thread que ouve mensagens recebidas de outros usuarios.
-
-        Fica em loop recebendo MSG_RELAY do servico. Cada MSG_RELAY
-        contem: [2B len_remetente][remetente][texto da mensagem].
-
-        Quando recebe algo, imprime na tela. O loop principal
-        continua lendo o teclado normalmente.
-        """
-        while self._conectado and self.socket:
-            tipo, payload = self._receber_msg()
-            if tipo is None:
-                break
-
-            if tipo == MSG_RELAY:
-                # Extrai: [2B len_rem][rem][mensagem]
-                len_rem = struct.unpack(">H", payload[:2])[0]
-                remetente = payload[2:2 + len_rem].decode()
-                texto = payload[2 + len_rem:].decode("utf-8",
-                                                      errors="replace")
-                self._imprimir(f"\n{remetente}: {texto}\n> ")
-
-            elif tipo == MSG_ERROR:
-                self._imprimir(
-                    f"\n[ERRO] {payload.decode()}"
-                )
-                break
-
-    # --- CHAT ---
-
-    def loop_chat(self):
-        """Loop principal: le mensagens do teclado e envia ao servico.
-
-        Formato: "destinatario texto da mensagem"
-        Exemplo: "bob Ola, como vai?"
-
-        Comandos especiais:
-          /sair  — encerra o chat
-        """
-        # Inicia a thread de escuta
-        self._conectado = True
-        escuta = threading.Thread(target=self._escutar, daemon=True)
-        escuta.start()
-
-        print("\nFormato: destinatario mensagem")
-        print("Exemplo: bob Ola, tudo bem?")
-        print("Digite /sair para encerrar.\n")
-
-        try:
-            while self._conectado:
-                linha = input("> ").strip()
-
-                if not linha:
-                    continue
-
-                if linha.lower() == "/sair":
-                    self._imprimir("[CLIENTE] Encerrando chat...")
-                    break
-
-                # Envia a mensagem para o servico (MSG_CHAT)
-                # O servico extrai o destinatario da primeira palavra
-                try:
-                    self.socket.sendall(
-                        empacotar(MSG_CHAT, linha.encode())
-                    )
-                except OSError:
-                    self._imprimir("[CLIENTE] Conexao perdida.")
-                    break
-
-        except KeyboardInterrupt:
-            self._imprimir("\n[CLIENTE] Chat interrompido.")
-        finally:
-            self.fechar()
 
 
 def _cadastrar_usuario():
@@ -310,13 +339,12 @@ def _cadastrar_usuario():
 
 
 def _login():
-    """Fluxo Kerberos completo: AS -> TGS -> Servico -> Chat."""
+    """Fluxo Kerberos completo: AS -> TGS -> Servico de Notas."""
     cliente = ClienteKerberos()
     try:
         cliente.executar_passo1()
         cliente.executar_passo2()
-        cliente.executar_passo3()
-        cliente.loop_chat()
+        cliente.loop_notas()
     except Exception as e:
         print(f"\n[FALHA] {e}")
         cliente.fechar()
@@ -326,7 +354,7 @@ def main():
     """Ponto de entrada do cliente Kerberos com menu de cadastro/login."""
     while True:
         print("\n" + "=" * 40)
-        print("  KERBEROS CHAT — Cliente")
+        print("  KERBEROS NOTAS — Cliente")
         print("=" * 40)
         print("  1. Cadastrar usuario")
         print("  2. Fazer login")
