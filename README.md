@@ -1,4 +1,4 @@
-# Kerberos Chat — Autenticação Kerberos com Chat Simples
+# Kerberos Notas — Autenticação Kerberos com Serviço de Notas Protegido
 
 **Disciplina:** Segurança Computacional — UnB  
 **Professor:** Prof. Roberto Rodrigues Filho  
@@ -12,7 +12,7 @@ Implementação didática do **protocolo Kerberos** utilizando exclusivamente cr
 
 1. **Authentication Server (AS)** — emite o Ticket Granting Ticket (TGT)
 2. **Ticket Granting Server (TGS)** — valida o TGT e emite o Service Ticket
-3. **Serviço Protegido** — valida o Service Ticket e realiza autenticação mútua
+3. **Serviço Protegido** — valida o Service Ticket, realiza autenticação mútua e gerencia notas por usuário
 4. **Cliente** — orquestra o fluxo AS → TGS → Serviço
 
 ---
@@ -31,7 +31,7 @@ CLIENTE                    AS                        TGS                    SERV
   │   TGT || K_c_AS_cif    │                         │                       │
   │                        │                         │                       │
   ├── MSG_TGS_REQUEST ─────►                         │                       │
-  │   TGT || "chat"                                  │                       │
+  │   TGT || "notas"                                 │                       │
   │                                                  │  Decifra TGT          │
   │                                                  │  Verifica validade    │
   │                                                  │  Gera K_c_svc         │
@@ -44,17 +44,22 @@ CLIENTE                    AS                        TGS                    SERV
   │                                                                          │  Decifra ticket
   │                                                                          │  Decifra authenticator
   │                                                                          │  Verifica nome + timestamp
+  │                                                                          │  Verifica expiração
   │◄── MSG_SVC_REPLY ──────────────────────────────────────────────────────┤  Soma 1 no timestamp
   │   timestamp+1 cifrado                                                    │  Cifra e envia
   │                                                                          │
   │  Verifica timestamp+1                                                    │
   │  -> Autenticação mútua OK!                                              │
   │                                                                          │
-  ├── MSG_CHAT ────────────────────────────────────────────────────────────►│
-  │  "destinatario mensagem"                             │
-  │                                                                          │  Encaminha via MSG_RELAY
-  │◄── MSG_RELAY ──────────────────────────────────────────────────────────┤
-  │  [remetente] mensagem                                                    │
+  ├── MSG_NOTE_* ──────────────────────────────────────────────────────────►│
+  │  /notas, /ler, /escrever                                                │  Lista, lê ou salva nota
+  │◄── MSG_NOTE_REPLY ─────────────────────────────────────────────────────┤
+  │  conteúdo da nota / confirmação                                         │
+  │                                                                          │
+  │         ┌─────────────────────────────────────────────────────────────┐  │
+  │         │  Cada comando abre NOVA conexão TCP, reutilizando o mesmo   │  │
+  │         │  Service Ticket (Single Sign-On).                           │  │
+  │         └─────────────────────────────────────────────────────────────┘  │
 ```
 
 ---
@@ -114,7 +119,7 @@ O cliente exibe um menu:
   0. Sair
 ```
 
-A opção 1 registra um novo usuário e retorna ao menu. A opção 2 inicia o fluxo Kerberos (AS → TGS → Serviço → Chat).
+A opção 1 registra um novo usuário e retorna ao menu. A opção 2 inicia o fluxo Kerberos (AS → TGS → Serviço → Notas).
 
 ### 5. Testes de ataque (opcional)
 
@@ -151,10 +156,11 @@ kerberos-chat/
 │   └── tgs_server.py               # Valida TGT, emite Service Ticket
 │
 ├── service/                        ← Serviço Protegido
-│   └── service_server.py           # Valida Service Ticket + relay de chat
+│   └── service_server.py           # Valida Service Ticket + gerencia notas
 │
 ├── client/                         ← Cliente
-│   └── client.py                   # Orquestra fluxo Kerberos + menu cadastro/login
+│   ├── client.py                   # Orquestra fluxo Kerberos + menu cadastro/login
+│   └── ui.py                       # Stub: interface de terminal
 │
 ├── keys/                           ← Chaves mestras (geradas com gerar-chaves)
 │   ├── as_master.key
@@ -166,6 +172,9 @@ kerberos-chat/
 ├── docs/
 │   ├── issues_projeto.md           # 40 tarefas (issues) do projeto
 │   ├── issues_pendentes.md         # Issues de auditoria e correções
+│   ├── plano_servidor_notas.md     # Design do serviço de notas
+│   ├── servico_notas.md            # Por que substituímos o chat relay pelo serviço de notas
+│   ├── plano_apresentacao_bloco3.md # Roteiro da apresentação — Bloco 3
 │   └── planejamento.md             # Divisão de tarefas, relatório, vídeo
 │
 ├── scripts/
@@ -247,10 +256,13 @@ Esse cabeçalho é montado pela função `empacotar()` em `common/protocol.py`.
 | 4 | `MSG_TGS_REPLY` | TGS → Cliente | `[4B tam_st][ST][4B tam_ks][K_c_svc]` |
 | 5 | `MSG_SVC_REQUEST` | Cliente → Serviço | `[4B tam_st][ST][4B tam_auth][authenticator]` |
 | 6 | `MSG_SVC_REPLY` | Serviço → Cliente | `timestamp+1 cifrado(12+8)` |
-| 7 | `MSG_CHAT` | Cliente → Serviço | `texto (bytes)` |
-| 8 | `MSG_ECHO` | Serviço → Cliente | `eco do texto (bytes)` |
+| 7 | `MSG_CHAT` | (legado) | — |
+| 8 | `MSG_ECHO` | (legado) | — |
 | 9 | `MSG_ERROR` | Qualquer → Qualquer | `mensagem de erro (bytes)` |
-| 10 | `MSG_RELAY` | Serviço → Cliente | `[2B len_rem][remetente][mensagem]` |
+| 10 | `MSG_NOTE_LIST` | Cliente → Serviço | `(vazio)` |
+| 11 | `MSG_NOTE_READ` | Cliente → Serviço | `nome_do_arquivo (bytes)` |
+| 12 | `MSG_NOTE_WRITE` | Cliente → Serviço | `nome_arquivo\n<conteudo> (bytes)` |
+| 13 | `MSG_NOTE_REPLY` | Serviço → Cliente | `conteúdo ou confirmação (bytes)` |
 
 > `(12+*)` = nonce AES-GCM (12 bytes) + ciphertext de tamanho variável  
 > `(12+8)` = nonce (12 bytes) + ciphertext de 8 bytes (apenas um timestamp)  
@@ -263,9 +275,13 @@ Esse cabeçalho é montado pela função `empacotar()` em `common/protocol.py`.
 - **MSG_AUTH_REPLY**: contém **salt de 16 bytes** no início, seguido por **dois blocos** cifrados independentemente — o TGT (cifrado com `as_master_key`) e K_c_AS (cifrada com a chave derivada da senha do usuário). Cada bloco cifrado tem prefixo de 4 bytes com seu tamanho.
 - **MSG_SVC_REQUEST**: o authenticator é a estrutura `{nome_usuario(2+*) + timestamp(8)}` cifrada com `K_c_svc`.
 - **MSG_SVC_REPLY**: o timestamp do authenticator **+1**, cifrado com `K_c_svc` — prova que o serviço conhece a chave (autenticação mútua).
-- O `nome_servico` em `MSG_TGS_REQUEST` é um identificador simples em bytes (ex: `b"chat"`, `b"arquivos"`).
-- **MSG_RELAY**: o payload é `[2 bytes len_remetente][remetente][mensagem]` — encaminhamento de mensagens entre usuários conectados.
+- O `nome_servico` em `MSG_TGS_REQUEST` é um identificador simples em bytes (ex: `b"notas"`, `b"chat"`).
+- **MSG_NOTE_LIST**: payload vazio — o ticket já identifica o usuário.
+- **MSG_NOTE_READ**: payload contém apenas o nome do arquivo a ser lido.
+- **MSG_NOTE_WRITE**: a primeira linha do payload é o nome do arquivo; o resto é o conteúdo a salvar.
 
 ---
 
-> Para planejamento da equipe (divisão de tarefas, relatório, vídeo), veja [`docs/planejamento.md`](docs/planejamento.md).
+> Para planejamento da equipe (divisão de tarefas, relatório, vídeo), veja [`docs/planejamento.md`](docs/planejamento.md).  
+> O design detalhado do serviço de notas está em [`docs/plano_servidor_notas.md`](docs/plano_servidor_notas.md).  
+> A justificativa da substituição do chat relay pelo serviço de notas está em [`docs/servico_notas.md`](docs/servico_notas.md).
