@@ -177,7 +177,9 @@ class ASServer:
             if header is None:
                 return
 
-            tipo, tamanho = desempacotar(header)
+            # Extrai o tipo e o tamanho do payload diretamente do cabeçalho.
+            # Evita usar desempacotar(), que retorna (tipo, payload) para mensagens completas.
+            tipo, tamanho = struct.unpack(">HI", header)
             if tipo != MSG_AUTH_REQUEST:
                 self._enviar_erro(con)
                 return
@@ -214,15 +216,15 @@ class ASServer:
             # Chave de sessão cliente/AS
             K_c_AS = os.urandom(16)
 
-            # Monta o TGT
-            timestamp = time.time()
-            validade = 3600
+            # Timestamp de emissão do ticket
+            timestamp = int(time.time())
+
+            # Monta o Ticket Granting Ticket (TGT)
             ticket = criar_ticket(
-                usuario=nome_usuario,
-                servico="TGS",
+                nome=nome_usuario.encode("utf-8"),
+                chave_sessao=K_c_AS,
                 timestamp=timestamp,
-                validade=validade,
-                chave=K_c_AS,
+                lifetime_min=LIFETIME_TICKET,
             )
 
             # Cifra o TGT com a chave mestra do AS (issue #2)
